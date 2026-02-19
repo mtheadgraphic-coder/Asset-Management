@@ -9,13 +9,35 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://unpkg.com/html5-qrcode"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Sarabun', sans-serif; background-color: #f3f4f6; }
+        body { font-family: 'Kanit', sans-serif; background-color: #f3f4f6; }
         .custom-scroll::-webkit-scrollbar { width: 6px; }
         .custom-scroll::-webkit-scrollbar-track { background: transparent; }
         .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
         .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+        * { font-family: 'Kanit', sans-serif; }
+        @media print {
+            .no-print { display: none; }
+            .print-only { display: block; }
+        }
+        .sticky-toolbar {
+            position: sticky;
+            top: 64px;
+            z-index: 40;
+            background-color: #f3f4f6;
+            padding-top: 0.5rem;
+            padding-bottom: 0.5rem;
+        }
+        .offline-badge {
+            background-color: #f59e0b;
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -24,7 +46,6 @@
     <script>
         const { useState, useEffect, useMemo, createElement: h, useRef } = React;
 
-        // --- COMPONENTS ---
         const Icon = ({ name, className = "w-5 h-5", ...props }) => {
             return h('span', {
                 ...props,
@@ -37,7 +58,123 @@
             if (window.lucide) window.lucide.createIcons();
         };
 
-        // GAS CODE TEMPLATE (Updated: Removed Stock logic)
+        // ----- Service Worker Registration and IndexedDB Setup -----
+        const swRegistration = (() => {
+            if ('serviceWorker' in navigator) {
+                // Create service worker from blob
+                const swCode = `
+                    const CACHE_NAME = 'asset-cache-v1';
+                    const urlsToCache = [
+                        '/',
+                        'https://unpkg.com/react@18/umd/react.production.min.js',
+                        'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
+                        'https://cdn.tailwindcss.com',
+                        'https://unpkg.com/lucide@latest',
+                        'https://unpkg.com/html5-qrcode',
+                        'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js',
+                        'https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap'
+                    ];
+
+                    self.addEventListener('install', event => {
+                        event.waitUntil(
+                            caches.open(CACHE_NAME)
+                                .then(cache => cache.addAll(urlsToCache))
+                        );
+                    });
+
+                    self.addEventListener('fetch', event => {
+                        event.respondWith(
+                            caches.match(event.request)
+                                .then(response => response || fetch(event.request))
+                        );
+                    });
+
+                    self.addEventListener('activate', event => {
+                        const cacheWhitelist = [CACHE_NAME];
+                        event.waitUntil(
+                            caches.keys().then(keyList =>
+                                Promise.all(keyList.map(key => {
+                                    if (!cacheWhitelist.includes(key)) {
+                                        return caches.delete(key);
+                                    }
+                                }))
+                            )
+                        );
+                    });
+                `;
+                const blob = new Blob([swCode], { type: 'application/javascript' });
+                const swUrl = URL.createObjectURL(blob);
+                navigator.serviceWorker.register(swUrl).then(reg => {
+                    console.log('Service Worker registered');
+                }).catch(err => console.error('SW registration failed', err));
+            }
+        })();
+
+        // IndexedDB helper
+        const openDB = () => {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open('AssetDB', 1);
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('assets')) {
+                        db.createObjectStore('assets', { keyPath: 'id' });
+                    }
+                    if (!db.objectStoreNames.contains('pending')) {
+                        db.createObjectStore('pending', { keyPath: 'id', autoIncrement: true });
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        };
+
+        const saveAssetsToIndexedDB = async (assets) => {
+            const db = await openDB();
+            const tx = db.transaction('assets', 'readwrite');
+            const store = tx.objectStore('assets');
+            assets.forEach(a => store.put(a));
+            return tx.complete;
+        };
+
+        const loadAssetsFromIndexedDB = async () => {
+            const db = await openDB();
+            const tx = db.transaction('assets', 'readonly');
+            const store = tx.objectStore('assets');
+            return new Promise((resolve, reject) => {
+                const request = store.getAll();
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        };
+
+        const addPending = async (data, action) => {
+            const db = await openDB();
+            const tx = db.transaction('pending', 'readwrite');
+            const store = tx.objectStore('pending');
+            store.add({ data, action, timestamp: Date.now() });
+            return tx.complete;
+        };
+
+        const getPending = async () => {
+            const db = await openDB();
+            const tx = db.transaction('pending', 'readonly');
+            const store = tx.objectStore('pending');
+            return new Promise((resolve, reject) => {
+                const request = store.getAll();
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        };
+
+        const clearPending = async (ids) => {
+            const db = await openDB();
+            const tx = db.transaction('pending', 'readwrite');
+            const store = tx.objectStore('pending');
+            ids.forEach(id => store.delete(id));
+            return tx.complete;
+        };
+
+        // GAS CODE TEMPLATE (removed Other sheet)
         const GAS_CODE_TEMPLATE = `function doPost(e) {
   var prop = ContentService.MimeType.JSON;
   try {
@@ -45,47 +182,83 @@
     var action = contents.action;
     var data = contents.data;
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('Sheet1');
-    if (!sheet) return ContentService.createTextOutput(JSON.stringify({status: 'error', message: 'Sheet1 not found'})).setMimeType(prop);
     
-    // --- Image Backup to Google Drive Logic ---
-    if (data.image && data.image.indexOf('data:image') > -1) {
-      try {
-        var folderName = "MathTalent_Asset_Images";
-        var folders = DriveApp.getFoldersByName(folderName);
-        var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
-        var contentType = data.image.substring(5, data.image.indexOf(';'));
-        var bytes = Utilities.base64Decode(data.image.split(',')[1]);
-        var blob = Utilities.newBlob(bytes, contentType, (data.code || "IMG") + "_" + new Date().getTime() + ".jpg");
-        var file = folder.createFile(blob);
-        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-        data.image = file.getUrl();
-      } catch (fErr) {
-        data.image = "Error Saving to Drive: " + fErr.toString();
+    // ---------- ASSET SHEET ----------
+    if (action === 'create' || action === 'update') {
+      var assetSheet = ss.getSheetByName('Asset');
+      if (!assetSheet) {
+        assetSheet = ss.insertSheet('Asset');
+        var assetHeaders = ['id', 'code', 'name', 'category', 'price', 'location', 'date', 'status', 'barcode', 'hasWarranty', 'warrantyYears', 'warrantyMonths', 'warrantyStart', 'warrantyEnd'];
+        assetSheet.appendRow(assetHeaders);
       }
-    }
-
-    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    
-    if (action === 'create') {
-      var newRow = headers.map(function(h) {
-        if (h === 'id') return Utilities.getUuid();
+      
+      // ตรวจสอบ headers ปัจจุบัน และเพิ่มคอลัมน์ที่ขาดหาย
+      var headers = assetSheet.getRange(1, 1, 1, assetSheet.getLastColumn()).getValues()[0];
+      var dataKeys = Object.keys(data);
+      var missingHeaders = dataKeys.filter(function(key) { return headers.indexOf(key) === -1; });
+      if (missingHeaders.length > 0) {
+        var newHeaders = headers.concat(missingHeaders);
+        assetSheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+        headers = newHeaders;
+      }
+      
+      // เตรียมข้อมูลแถวตามลำดับ headers
+      var rowData = headers.map(function(h) {
+        if (h === 'id' && !data.id && action === 'create') {
+          return Utilities.getUuid();
+        }
         return data[h] || "";
       });
-      sheet.appendRow(newRow);
-    } else if (action === 'update') {
-      var ids = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues().flat();
-      var rowIndex = ids.indexOf(data.id) + 2;
-      if (rowIndex > 1) {
-        var oldData = sheet.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
-        var rowData = headers.map(function(h, i) { 
-           if (h === 'image' && (!data[h] || data[h] === "")) return oldData[i];
-           return data[h] || ""; 
-        });
-        sheet.getRange(rowIndex, 1, 1, headers.length).setValues([rowData]);
+      
+      if (action === 'create') {
+        assetSheet.appendRow(rowData);
+      } else if (action === 'update') {
+        var ids = assetSheet.getRange(2, 1, assetSheet.getLastRow() - 1, 1).getValues().flat();
+        var rowIndex = ids.indexOf(data.id) + 2;
+        if (rowIndex > 1) {
+          assetSheet.getRange(rowIndex, 1, 1, headers.length).setValues([rowData]);
+        } else {
+          assetSheet.appendRow(rowData); // fallback
+        }
       }
+      
+      return ContentService.createTextOutput(JSON.stringify({status: 'success'})).setMimeType(prop);
     }
-    return ContentService.createTextOutput(JSON.stringify({status: 'success'})).setMimeType(prop);
+    
+    // ---------- SAVE CONFIG (Dropdown) ----------
+    if (action === 'saveConfig') {
+      var dropdownSheet = ss.getSheetByName('Dropdown');
+      if (!dropdownSheet) {
+        dropdownSheet = ss.insertSheet('Dropdown');
+        dropdownSheet.appendRow(['type', 'id', 'name', 'prefix', 'order']);
+      }
+      
+      // ลบข้อมูลเก่าทิ้ง (เก็บหัวตารางไว้)
+      var lastRow = dropdownSheet.getLastRow();
+      if (lastRow > 1) dropdownSheet.deleteRows(2, lastRow - 1);
+      
+      // บันทึก categories
+      var categories = data.categories || [];
+      categories.forEach(function(cat) {
+        dropdownSheet.appendRow(['category', cat.id || '', cat.name || '', cat.prefix || '', cat.order || '']);
+      });
+      
+      // บันทึก locations
+      var locations = data.locations || [];
+      locations.forEach(function(loc) {
+        dropdownSheet.appendRow(['location', loc.id || '', loc.name || '', '', loc.order || '']);
+      });
+      
+      // บันทึก statuses
+      var statuses = data.statuses || [];
+      statuses.forEach(function(status) {
+        dropdownSheet.appendRow(['status', status.id || '', status.name || '', '', status.order || '']);
+      });
+      
+      return ContentService.createTextOutput(JSON.stringify({status: 'success'})).setMimeType(prop);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({status: 'error', message: 'Unknown action'})).setMimeType(prop);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({status: 'error', message: err.toString()})).setMimeType(prop);
   }
@@ -94,10 +267,12 @@
 function doGet(e) {
   var action = e.parameter.action;
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('Sheet1');
   var prop = ContentService.MimeType.JSON;
+  
   if (action === 'read') {
-    var data = sheet.getDataRange().getValues();
+    var assetSheet = ss.getSheetByName('Asset');
+    if (!assetSheet) return ContentService.createTextOutput(JSON.stringify([])).setMimeType(prop);
+    var data = assetSheet.getDataRange().getValues();
     if (data.length < 1) return ContentService.createTextOutput(JSON.stringify([])).setMimeType(prop);
     var headers = data[0];
     var rows = data.slice(1);
@@ -108,47 +283,269 @@ function doGet(e) {
     });
     return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(prop);
   }
+  
+  if (action === 'readConfig') {
+    // อ่านค่าจาก Dropdown sheet
+    var dropdownSheet = ss.getSheetByName('Dropdown');
+    if (!dropdownSheet) return ContentService.createTextOutput(JSON.stringify({})).setMimeType(prop);
+    var data = dropdownSheet.getDataRange().getValues();
+    if (data.length < 1) return ContentService.createTextOutput(JSON.stringify({})).setMimeType(prop);
+    var headers = data[0];
+    var rows = data.slice(1);
+    
+    var categories = [];
+    var locations = [];
+    var statuses = [];
+    
+    rows.forEach(function(row) {
+      var type = row[0];
+      var id = row[1];
+      var name = row[2];
+      var prefix = row[3];
+      var order = row[4];
+      var item = { id: id, name: name, order: order };
+      if (type === 'category') {
+        item.prefix = prefix;
+        categories.push(item);
+      } else if (type === 'location') {
+        locations.push(item);
+      } else if (type === 'status') {
+        statuses.push(item);
+      }
+    });
+    
+    var config = {
+      categories: categories,
+      locations: locations,
+      statuses: statuses
+    };
+    return ContentService.createTextOutput(JSON.stringify(config)).setMimeType(prop);
+  }
 }`;
 
-        const CATEGORIES = {
-            'สื่อคณิตศาสตร์': 'M',
-            'สื่อวิทยาศาสตร์': 'S',
-            'อุปกรณ์คอมพิวเตอร์-ไอที': 'C',
-            'เบ็ดเตล็ด': 'A'
-        };
+        // Default categories ตามรูป (M, S, IT, X)
+        const DEFAULT_CATEGORIES = [
+            { id: '1', name: 'สื่อคณิตศาสตร์', prefix: 'M', order: 0 },
+            { id: '2', name: 'สื่อวิทยาศาสตร์', prefix: 'S', order: 1 },
+            { id: '3', name: 'อุปกรณ์คอมพิวเตอร์-ไอที', prefix: 'IT', order: 2 },
+            { id: '4', name: 'เบ็ดเตล็ด', prefix: 'X', order: 3 }
+        ];
 
-        // --- MAIN APP ---
+        const DEFAULT_LOCATIONS = [
+            { id: '1', name: 'ห้องเก็บของ', order: 0 },
+            { id: '2', name: 'ห้องประชุม', order: 1 }
+        ];
+
+        const DEFAULT_STATUSES = [
+            { id: '1', name: 'ใช้งานได้', order: 0 },
+            { id: '2', name: 'เสีย', order: 1 },
+            { id: '3', name: 'รอส่งซ่อม', order: 2 },
+            { id: '4', name: 'อยู่ระหว่างการซ่อม', order: 3 },
+            { id: '5', name: 'ยกเลิกการใช้งาน', order: 4 }
+        ];
+
+        const SORT_COLUMNS = [
+            { value: 'code', label: 'รหัส' },
+            { value: 'name', label: 'ชื่อ' },
+            { value: 'category', label: 'หมวดหมู่' },
+            { value: 'location', label: 'สถานที่' },
+            { value: 'price', label: 'ราคา' },
+            { value: 'date', label: 'วันที่' }
+        ];
+
+        const ALL_COLUMNS = [
+            { key: 'checkbox', label: '', sortable: false, always: true },
+            { key: 'code', label: 'รหัส/ชื่อ', sortable: true },
+            { key: 'category', label: 'หมวดหมู่', sortable: true },
+            { key: 'location', label: 'สถานที่', sortable: true },
+            { key: 'price', label: 'ราคา', sortable: true, align: 'text-right' },
+            { key: 'actions', label: 'จัดการ', sortable: false, align: 'text-center' }
+        ];
+
         function App() {
-            // States
             const [scriptUrl, setScriptUrl] = useState(localStorage.getItem('mt_script_url') || '');
             const [assets, setAssets] = useState([]);
             const [loading, setLoading] = useState(false);
             const [searchTerm, setSearchTerm] = useState('');
-            
-            // Drawer States
             const [isFormOpen, setIsFormOpen] = useState(false);
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-            
-            // Hardware States
+            const [isConfigOpen, setIsConfigOpen] = useState(false);
+            const [configType, setConfigType] = useState('categories');
+            const [sortRules, setSortRules] = useState([]);
+            const [showSortModal, setShowSortModal] = useState(false);
+            const [hiddenColumns, setHiddenColumns] = useState([]);
+            const [showColumnModal, setShowColumnModal] = useState(false);
             const [isScanning, setIsScanning] = useState(false);
-            const [isCapturing, setIsCapturing] = useState(false);
+            const scannerRef = useRef(null);
             const [syncStatus, setSyncStatus] = useState('idle');
             const [copied, setCopied] = useState(false);
-            
-            const videoRef = useRef(null);
-            const scannerRef = useRef(null);
-            
+            const [totalViewMode, setTotalViewMode] = useState('total');
+            const [itemsViewMode, setItemsViewMode] = useState('total');
+            const [showSummary, setShowSummary] = useState(true);
+            const [selectedIds, setSelectedIds] = useState(new Set());
+            const [showPrintModal, setShowPrintModal] = useState(false);
+            const [printSize, setPrintSize] = useState('M');
+            const [printPaper, setPrintPaper] = useState('A4');
+            const [categories, setCategories] = useState(() => {
+                const saved = localStorage.getItem('mt_categories');
+                return saved ? JSON.parse(saved) : DEFAULT_CATEGORIES;
+            });
+            const [locations, setLocations] = useState(() => {
+                const saved = localStorage.getItem('mt_locations');
+                return saved ? JSON.parse(saved) : DEFAULT_LOCATIONS;
+            });
+            const [statuses, setStatuses] = useState(() => {
+                const saved = localStorage.getItem('mt_statuses');
+                return saved ? JSON.parse(saved) : DEFAULT_STATUSES;
+            });
             const [formData, setFormData] = useState({
                 id: '', code: '', name: '', category: 'สื่อคณิตศาสตร์', 
                 price: '', location: '', date: new Date().toISOString().split('T')[0], 
-                status: 'ใช้งานปกติ', image: ''
+                status: 'ใช้งานได้',
+                barcode: '',
+                hasWarranty: false,
+                warrantyYears: '',
+                warrantyMonths: '',
+                warrantyStart: '',
+                warrantyEnd: ''
             });
+            const [barcodeDataURL, setBarcodeDataURL] = useState('');
+            const [showInstructions, setShowInstructions] = useState(false);
+            const [isOnline, setIsOnline] = useState(navigator.onLine);
+            const [pendingCount, setPendingCount] = useState(0);
 
-            // Effect to refresh icons
-            useEffect(() => { refreshIcons(); }, [assets, loading, isScanning, isCapturing, isFormOpen, isSettingsOpen, syncStatus]);
+            // Online/Offline detection
+            useEffect(() => {
+                const handleOnline = () => setIsOnline(true);
+                const handleOffline = () => setIsOnline(false);
+                window.addEventListener('online', handleOnline);
+                window.addEventListener('offline', handleOffline);
+                return () => {
+                    window.removeEventListener('online', handleOnline);
+                    window.removeEventListener('offline', handleOffline);
+                };
+            }, []);
 
-            // Initial Fetch
-            useEffect(() => { if (scriptUrl) fetchData(); }, []);
+            // Load pending count
+            useEffect(() => {
+                const loadPending = async () => {
+                    const pending = await getPending();
+                    setPendingCount(pending.length);
+                };
+                loadPending();
+            }, []);
+
+            // Sync pending when online
+            useEffect(() => {
+                if (isOnline && pendingCount > 0) {
+                    syncPending();
+                }
+            }, [isOnline, pendingCount]);
+
+            const syncPending = async () => {
+                const pending = await getPending();
+                for (let p of pending) {
+                    try {
+                        await fetch(scriptUrl, {
+                            method: 'POST', mode: 'no-cors',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: p.action, data: p.data })
+                        });
+                    } catch (e) {}
+                }
+                await clearPending(pending.map(p => p.id));
+                setPendingCount(0);
+                // Refresh data after sync
+                setTimeout(() => fetchData(), 1500);
+            };
+
+            // Load initial data from IndexedDB if offline
+            useEffect(() => {
+                const loadOfflineData = async () => {
+                    if (!isOnline) {
+                        const localAssets = await loadAssetsFromIndexedDB();
+                        if (localAssets.length) setAssets(localAssets);
+                    }
+                };
+                loadOfflineData();
+            }, [isOnline]);
+
+            // Save assets to IndexedDB whenever they change (for offline)
+            useEffect(() => {
+                if (assets.length > 0) {
+                    saveAssetsToIndexedDB(assets);
+                }
+            }, [assets]);
+
+            useEffect(() => { refreshIcons(); }, [assets, loading, isScanning, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount]);
+
+            useEffect(() => {
+                if (scriptUrl) {
+                    fetchData();
+                    fetchConfig();
+                }
+            }, []);
+
+            useEffect(() => {
+                if (scriptUrl) {
+                    fetchConfig();
+                }
+            }, [scriptUrl]);
+
+            useEffect(() => {
+                localStorage.setItem('mt_categories', JSON.stringify(categories));
+            }, [categories]);
+            useEffect(() => {
+                localStorage.setItem('mt_locations', JSON.stringify(locations));
+            }, [locations]);
+            useEffect(() => {
+                localStorage.setItem('mt_statuses', JSON.stringify(statuses));
+            }, [statuses]);
+
+            useEffect(() => {
+                if (formData.code && formData.name) {
+                    generateBarcode();
+                } else {
+                    setBarcodeDataURL('');
+                }
+            }, [formData.code, formData.name]);
+
+            useEffect(() => {
+                if (!formData.hasWarranty) return;
+                if (formData.warrantyStart && (formData.warrantyYears || formData.warrantyMonths)) {
+                    const start = new Date(formData.warrantyStart);
+                    const years = parseInt(formData.warrantyYears) || 0;
+                    const months = parseInt(formData.warrantyMonths) || 0;
+                    const end = new Date(start);
+                    end.setFullYear(end.getFullYear() + years);
+                    end.setMonth(end.getMonth() + months);
+                    const endStr = end.toISOString().split('T')[0];
+                    if (endStr !== formData.warrantyEnd) {
+                        setFormData(prev => ({ ...prev, warrantyEnd: endStr }));
+                    }
+                }
+            }, [formData.warrantyStart, formData.warrantyYears, formData.warrantyMonths, formData.hasWarranty]);
+
+            useEffect(() => {
+                if (!formData.hasWarranty) return;
+                if (formData.warrantyStart && formData.warrantyEnd) {
+                    const start = new Date(formData.warrantyStart);
+                    const end = new Date(formData.warrantyEnd);
+                    if (end > start) {
+                        let years = end.getFullYear() - start.getFullYear();
+                        let months = end.getMonth() - start.getMonth();
+                        if (months < 0) {
+                            years -= 1;
+                            months += 12;
+                        }
+                        const newYears = years.toString();
+                        const newMonths = months.toString();
+                        if (newYears !== formData.warrantyYears || newMonths !== formData.warrantyMonths) {
+                            setFormData(prev => ({ ...prev, warrantyYears: newYears, warrantyMonths: newMonths }));
+                        }
+                    }
+                }
+            }, [formData.warrantyStart, formData.warrantyEnd, formData.hasWarranty]);
 
             const fetchData = async () => {
                 if (!scriptUrl) return;
@@ -162,109 +559,396 @@ function doGet(e) {
                     setTimeout(() => setSyncStatus('idle'), 3000);
                 } catch (e) { 
                     setSyncStatus('error');
+                    // If offline, try to load from IndexedDB
+                    const localAssets = await loadAssetsFromIndexedDB();
+                    if (localAssets.length) setAssets(localAssets);
                 } finally { setLoading(false); }
             };
 
-            const stats = useMemo(() => ({
-                totalItems: assets.length,
-                totalValue: assets.reduce((sum, item) => sum + Number(item.price || 0), 0)
-            }), [assets]);
+            const fetchConfig = async () => {
+                if (!scriptUrl) return;
+                try {
+                    const response = await fetch(`${scriptUrl}?action=readConfig`);
+                    const config = await response.json();
+                    if (config.categories) setCategories(config.categories);
+                    if (config.locations) setLocations(config.locations);
+                    if (config.statuses) setStatuses(config.statuses);
+                } catch (e) {
+                    console.warn('Failed to load config from sheet');
+                }
+            };
 
-            const compressImage = (img) => {
+            const saveConfigToSheet = async () => {
+                if (!scriptUrl) return;
+                try {
+                    await fetch(scriptUrl, {
+                        method: 'POST', mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            action: 'saveConfig', 
+                            data: { categories, locations, statuses } 
+                        })
+                    });
+                } catch (e) {}
+            };
+
+            const filteredAssetsForItems = useMemo(() => {
+                if (itemsViewMode === 'total') return assets;
+                const now = new Date();
+                const currentMonth = now.getMonth();
+                const currentYear = now.getFullYear();
+                return assets.filter(item => {
+                    if (!item.date) return false;
+                    const d = new Date(item.date);
+                    if (itemsViewMode === 'month') {
+                        return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+                    } else {
+                        return d.getFullYear() === currentYear;
+                    }
+                });
+            }, [assets, itemsViewMode]);
+
+            const totalItems = filteredAssetsForItems.length;
+
+            const totalValue = useMemo(() => {
+                if (totalViewMode === 'total') {
+                    return assets.reduce((sum, item) => sum + Number(item.price || 0), 0);
+                } else if (totalViewMode === 'month') {
+                    const now = new Date();
+                    const currentMonth = now.getMonth();
+                    const currentYear = now.getFullYear();
+                    return assets.reduce((sum, item) => {
+                        if (item.date) {
+                            const d = new Date(item.date);
+                            if (d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
+                                return sum + Number(item.price || 0);
+                            }
+                        }
+                        return sum;
+                    }, 0);
+                } else {
+                    const currentYear = new Date().getFullYear();
+                    return assets.reduce((sum, item) => {
+                        if (item.date) {
+                            const d = new Date(item.date);
+                            if (d.getFullYear() === currentYear) {
+                                return sum + Number(item.price || 0);
+                            }
+                        }
+                        return sum;
+                    }, 0);
+                }
+            }, [assets, totalViewMode]);
+
+            const generateBarcode = () => {
+                if (!formData.code || !formData.name) return;
                 const canvas = document.createElement('canvas');
-                const MAX_WIDTH = 400;
-                const scaleSize = MAX_WIDTH / img.width;
-                canvas.width = MAX_WIDTH;
-                canvas.height = img.height * scaleSize;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                return canvas.toDataURL('image/jpeg', 0.7);
+                try {
+                    JsBarcode(canvas, formData.code, {
+                        format: "CODE128",
+                        lineColor: "#000",
+                        width: 2,
+                        height: 50,
+                        displayValue: true,
+                        fontSize: 14,
+                        text: `${formData.name} - ${formData.code}`
+                    });
+                    setBarcodeDataURL(canvas.toDataURL("image/png"));
+                } catch (e) {
+                    console.error("Barcode generation failed", e);
+                }
             };
 
-            // Hardware Functions (Camera/Scanner) - same as before
-            const startCamera = async () => {
-                setIsCapturing(true);
-                setTimeout(async () => {
-                    try {
-                        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                        if (videoRef.current) videoRef.current.srcObject = stream;
-                    } catch (err) { setIsCapturing(false); alert('Camera Error'); }
-                }, 300);
-            };
-            const stopCamera = () => {
-                if (videoRef.current && videoRef.current.srcObject) videoRef.current.srcObject.getTracks().forEach(t => t.stop());
-                setIsCapturing(false);
-            };
-            const takePhoto = () => {
-                if (!videoRef.current) return;
-                const canvas = document.createElement('canvas');
-                canvas.width = videoRef.current.videoWidth;
-                canvas.height = videoRef.current.videoHeight;
-                canvas.getContext('2d').drawImage(videoRef.current, 0, 0);
-                const img = new Image();
-                img.onload = () => { setFormData(prev => ({ ...prev, image: compressImage(img) })); stopCamera(); };
-                img.src = canvas.toDataURL('image/jpeg');
+            const downloadBarcode = () => {
+                if (!barcodeDataURL) return;
+                const link = document.createElement('a');
+                link.download = `barcode-${formData.code}.png`;
+                link.href = barcodeDataURL;
+                link.click();
             };
 
-            // Form Handlers
             const openForm = (item = null) => {
                 if (item) {
-                    setFormData(item);
+                    setFormData({
+                        ...item,
+                        barcode: item.barcode || '',
+                        hasWarranty: item.hasWarranty === 'true' || item.hasWarranty === true,
+                        warrantyYears: item.warrantyYears || '',
+                        warrantyMonths: item.warrantyMonths || '',
+                        warrantyStart: item.warrantyStart || '',
+                        warrantyEnd: item.warrantyEnd || ''
+                    });
                 } else {
-                    setFormData({ id: '', code: '', name: '', category: 'สื่อคณิตศาสตร์', price: '', location: '', date: new Date().toISOString().split('T')[0], status: 'ใช้งานปกติ', image: '' });
+                    setFormData({ 
+                        id: '', code: '', name: '', category: categories[0]?.name || 'สื่อคณิตศาสตร์', 
+                        price: '', location: locations[0]?.name || 'ห้องเก็บของ', 
+                        date: new Date().toISOString().split('T')[0], 
+                        status: statuses[0]?.name || 'ใช้งานได้',
+                        barcode: '',
+                        hasWarranty: false,
+                        warrantyYears: '',
+                        warrantyMonths: '',
+                        warrantyStart: '',
+                        warrantyEnd: ''
+                    });
                 }
                 setIsFormOpen(true);
             };
 
+            // Optimistic update: close form, add to state immediately, then sync in background
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 if (!scriptUrl) { setIsSettingsOpen(true); return; }
-                setLoading(true);
-                setSyncStatus('syncing');
+                
                 const action = formData.id ? 'update' : 'create';
-                try {
-                    await fetch(scriptUrl, {
-                        method: 'POST', mode: 'no-cors',
-                        cache: 'no-cache', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action, data: formData })
-                    });
-                    setTimeout(() => {
-                        setSyncStatus('success');
-                        fetchData();
-                        setIsFormOpen(false);
-                        setLoading(false);
-                    }, 2500);
-                } catch (e) { setSyncStatus('error'); setLoading(false); }
+                const tempId = action === 'create' ? `temp-${Date.now()}` : formData.id;
+                const newAsset = { ...formData, id: tempId };
+                
+                // Optimistic update
+                if (action === 'create') {
+                    setAssets(prev => [newAsset, ...prev]);
+                } else {
+                    setAssets(prev => prev.map(a => a.id === formData.id ? newAsset : a));
+                }
+                
+                // Close form immediately
+                setIsFormOpen(false);
+                
+                // Save to IndexedDB for offline
+                await saveAssetsToIndexedDB(assets); // but assets state not updated yet? we need to save the new one
+                // Actually we'll save after state update, but state update is async. Better to save in useEffect.
+                // We'll add a useEffect that saves assets to IndexedDB whenever assets changes.
+                
+                // If offline, add to pending queue
+                if (!isOnline) {
+                    await addPending(formData, action);
+                    setPendingCount(prev => prev + 1);
+                } else {
+                    // Send to GAS in background
+                    try {
+                        await fetch(scriptUrl, {
+                            method: 'POST', mode: 'no-cors',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action, data: formData })
+                        });
+                        // After sending, schedule a refresh after a delay
+                        setTimeout(() => {
+                            fetchData();
+                        }, 1500); // เพิ่มเวลาให้ GAS ประมวลผล
+                    } catch (e) {
+                        // If failed, add to pending
+                        await addPending(formData, action);
+                        setPendingCount(prev => prev + 1);
+                    }
+                }
             };
 
-            // Auto Code Generator
+            // Auto Code Generator with prefix from category (ใช้ prefix ตามรูป)
             useEffect(() => {
                 if (!formData.id && !formData.code && isFormOpen) {
-                    const prefix = CATEGORIES[formData.category] || 'X';
+                    const cat = categories.find(c => c.name === formData.category);
+                    const prefix = (cat && cat.prefix) ? cat.prefix : 'X'; // fallback X
                     const count = assets.filter(a => a.category === formData.category).length + 1;
                     const newCode = `${prefix}-${String(count).padStart(6, '0')}`;
                     setFormData(prev => ({ ...prev, code: newCode }));
                 }
-            }, [formData.category, assets.length, formData.id, isFormOpen]);
+            }, [formData.category, assets.length, formData.id, isFormOpen, categories]);
 
-            const copyToClipboard = () => {
-                navigator.clipboard.writeText(GAS_CODE_TEMPLATE);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
+            const openConfigEditor = (type) => {
+                setConfigType(type);
+                setIsConfigOpen(true);
             };
 
-            const filteredAssets = assets.filter(a => 
-                (a.name || "").toLowerCase().includes(searchTerm.toLowerCase()) || 
-                (a.code || "").toLowerCase().includes(searchTerm.toLowerCase())
-            );
+            const addConfigItem = (type, name) => {
+                const newItem = {
+                    id: Date.now().toString(),
+                    name,
+                    ...(type === 'categories' ? { prefix: 'X' } : {}),
+                    order: type === 'categories' ? categories.length : type === 'locations' ? locations.length : statuses.length
+                };
+                if (type === 'categories') {
+                    setCategories([...categories, newItem]);
+                } else if (type === 'locations') {
+                    setLocations([...locations, newItem]);
+                } else {
+                    setStatuses([...statuses, newItem]);
+                }
+            };
 
-            return h('div', { className: "min-h-screen flex flex-col font-sans text-slate-800" },
+            const updateConfigItem = (type, id, field, value) => {
+                const updateFn = (items) => items.map(item => item.id === id ? { ...item, [field]: value } : item);
+                if (type === 'categories') {
+                    setCategories(updateFn(categories));
+                } else if (type === 'locations') {
+                    setLocations(updateFn(locations));
+                } else {
+                    setStatuses(updateFn(statuses));
+                }
+            };
+
+            const deleteConfigItem = (type, id) => {
+                const filterFn = (items) => items.filter(item => item.id !== id);
+                if (type === 'categories') {
+                    setCategories(filterFn(categories));
+                } else if (type === 'locations') {
+                    setLocations(filterFn(locations));
+                } else {
+                    setStatuses(filterFn(statuses));
+                }
+            };
+
+            const moveConfigItem = (type, id, direction) => {
+                const items = type === 'categories' ? [...categories] : type === 'locations' ? [...locations] : [...statuses];
+                const index = items.findIndex(i => i.id === id);
+                if (direction === 'up' && index > 0) {
+                    [items[index-1].order, items[index].order] = [items[index].order, items[index-1].order];
+                } else if (direction === 'down' && index < items.length-1) {
+                    [items[index+1].order, items[index].order] = [items[index].order, items[index+1].order];
+                }
+                items.sort((a,b) => a.order - b.order);
+                if (type === 'categories') {
+                    setCategories(items);
+                } else if (type === 'locations') {
+                    setLocations(items);
+                } else {
+                    setStatuses(items);
+                }
+            };
+
+            useEffect(() => {
+                if (scriptUrl) {
+                    saveConfigToSheet();
+                }
+            }, [categories, locations, statuses]);
+
+            const filteredAssets = useMemo(() => {
+                return assets.filter(a => 
+                    (a.name || "").toLowerCase().includes(searchTerm.toLowerCase()) || 
+                    (a.code || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    (a.location || "").toLowerCase().includes(searchTerm.toLowerCase())
+                );
+            }, [assets, searchTerm]);
+
+            const sortedAssets = useMemo(() => {
+                if (sortRules.length === 0) return filteredAssets;
+                return [...filteredAssets].sort((a, b) => {
+                    for (let rule of sortRules) {
+                        const col = rule.col;
+                        const dir = rule.dir === 'asc' ? 1 : -1;
+                        let valA = a[col];
+                        let valB = b[col];
+                        if (col === 'price') {
+                            valA = Number(valA) || 0;
+                            valB = Number(valB) || 0;
+                        } else if (col === 'date') {
+                            valA = valA ? new Date(valA) : 0;
+                            valB = valB ? new Date(valB) : 0;
+                        } else {
+                            valA = (valA || '').toString().toLowerCase();
+                            valB = (valB || '').toString().toLowerCase();
+                        }
+                        if (valA < valB) return -1 * dir;
+                        if (valA > valB) return 1 * dir;
+                    }
+                    return 0;
+                });
+            }, [filteredAssets, sortRules]);
+
+            const toggleSelect = (id) => {
+                const newSet = new Set(selectedIds);
+                if (newSet.has(id)) newSet.delete(id);
+                else newSet.add(id);
+                setSelectedIds(newSet);
+            };
+
+            const selectAll = () => {
+                if (selectedIds.size === filteredAssets.length) {
+                    setSelectedIds(new Set());
+                } else {
+                    setSelectedIds(new Set(filteredAssets.map(a => a.id)));
+                }
+            };
+
+            const printBarcodes = () => {
+                const selectedItems = assets.filter(a => selectedIds.has(a.id));
+                if (selectedItems.length === 0) return;
                 
-                // --- TOP BAR ---
+                const printWindow = window.open('', '_blank');
+                const styles = `
+                    <style>
+                        body { font-family: 'Kanit', sans-serif; margin: 0; padding: 0; }
+                        .barcode-page {
+                            display: flex;
+                            flex-wrap: wrap;
+                            gap: 0;
+                            justify-content: flex-start;
+                        }
+                        .barcode-item {
+                            text-align: center;
+                            width: ${printSize === 'S' ? '150px' : printSize === 'M' ? '200px' : '250px'};
+                            box-sizing: border-box;
+                        }
+                        .barcode-item img { max-width: 100%; height: auto; display: block; }
+                        @media print {
+                            .no-print { display: none; }
+                        }
+                    </style>
+                `;
+                let content = '<div class="barcode-page">';
+                selectedItems.forEach(item => {
+                    const canvas = document.createElement('canvas');
+                    try {
+                        JsBarcode(canvas, item.code, {
+                            format: "CODE128",
+                            lineColor: "#000",
+                            width: 2,
+                            height: 50,
+                            displayValue: true,
+                            fontSize: 12,
+                            text: `${item.name} - ${item.code}`
+                        });
+                        const dataURL = canvas.toDataURL("image/png");
+                        content += `<div class="barcode-item"><img src="${dataURL}" /></div>`;
+                    } catch (e) {}
+                });
+                content += '</div>';
+                
+                printWindow.document.write(`
+                    <html>
+                        <head><title>พิมพ์บาร์โค้ด</title>${styles}</head>
+                        <body>${content}</body>
+                    </html>
+                `);
+                printWindow.document.close();
+                printWindow.focus();
+                printWindow.print();
+                setShowPrintModal(false);
+            };
+
+            const addSortRule = (col, dir) => {
+                setSortRules([...sortRules, { col, dir }]);
+            };
+
+            const removeSortRule = (index) => {
+                const newRules = [...sortRules];
+                newRules.splice(index, 1);
+                setSortRules(newRules);
+            };
+
+            const toggleColumn = (colKey) => {
+                if (hiddenColumns.includes(colKey)) {
+                    setHiddenColumns(hiddenColumns.filter(c => c !== colKey));
+                } else {
+                    setHiddenColumns([...hiddenColumns, colKey]);
+                }
+            };
+
+            const visibleColumns = ALL_COLUMNS.filter(col => !hiddenColumns.includes(col.key) || col.always);
+
+            return h('div', { className: "min-h-screen flex flex-col text-slate-800" },
                 h('div', { className: "bg-white shadow-sm z-30 sticky top-0" },
                     h('div', { className: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" },
                         h('div', { className: "flex justify-between h-16 items-center" },
-                            // Logo Area
                             h('div', { className: "flex items-center gap-3" },
                                 h('div', { className: "bg-indigo-600 p-2 rounded-lg shadow-indigo-200 shadow-md" },
                                     h(Icon, { name: "box", className: "w-5 h-5 text-white" })
@@ -274,103 +958,175 @@ function doGet(e) {
                                     h('p', { className: "text-[10px] text-slate-400 font-medium tracking-wider uppercase" }, "Asset Management System")
                                 )
                             ),
-                            // Actions Area
                             h('div', { className: "flex items-center gap-3" },
-                                // Sync Indicator
+                                !isOnline && h('span', { className: "offline-badge" }, "ออฟไลน์"),
+                                pendingCount > 0 && h('span', { className: "bg-amber-500 text-white px-2 py-1 rounded-full text-xs font-bold" }, `รอซิงก์ ${pendingCount}`),
                                 h('div', { className: `hidden sm:flex px-3 py-1 rounded-full items-center gap-2 border ${syncStatus === 'success' ? 'bg-green-50 border-green-100 text-green-600' : 'bg-slate-50 border-slate-100 text-slate-500'}` },
                                     h('div', { className: `w-2 h-2 rounded-full ${syncStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : syncStatus === 'success' ? 'bg-green-500' : 'bg-slate-300'}` }),
                                     h('span', { className: "text-xs font-bold" }, syncStatus === 'success' ? 'Cloud Synced' : syncStatus === 'syncing' ? 'Syncing...' : 'Standby')
                                 ),
                                 h('button', { 
+                                    onClick: () => setShowSummary(!showSummary), 
+                                    className: "flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-2 rounded-lg font-semibold text-sm transition-all" 
+                                }, h(Icon, { name: showSummary ? "eye" : "eye-off", className: "w-4 h-4" }), 
+                                  h('span', { className: "hidden sm:inline" }, showSummary ? 'ซ่อนสรุป' : 'แสดงสรุป')),
+                                h('button', { 
                                     onClick: () => setIsSettingsOpen(true), 
                                     className: "flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-lg font-semibold text-sm transition-all" 
-                                }, h(Icon, { name: "settings", className: "w-4 h-4" }), "ตั้งค่า")
+                                }, h(Icon, { name: "settings", className: "w-4 h-4" }), 
+                                  h('span', { className: "hidden sm:inline" }, "ตั้งค่า"))
                             )
                         )
                     )
                 ),
 
-                // --- MAIN CONTENT ---
                 h('div', { className: "flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8" },
-                    
-                    // Stats Cards
-                    h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-8" },
+                    showSummary && h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-8" },
                         h('div', { className: "bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-center" },
                             h('p', { className: "text-slate-400 text-xs font-bold uppercase tracking-wider mb-1" }, "ทรัพย์สินรวม"),
                             h('div', { className: "flex items-baseline gap-2" },
-                                h('h3', { className: "text-4xl font-black text-slate-800" }, stats.totalItems),
+                                h('h3', { className: "text-4xl font-black text-slate-800" }, totalItems),
                                 h('span', { className: "text-sm text-slate-400 font-medium" }, "รายการ")
+                            ),
+                            h('div', { className: "flex gap-2 mt-3" },
+                                ['total', 'month', 'year'].map(mode => {
+                                    const labels = { total: 'ทั้งหมด', month: 'เดือนนี้', year: 'ปีนี้' };
+                                    return h('button', {
+                                        key: mode,
+                                        onClick: () => setItemsViewMode(mode),
+                                        className: `px-3 py-1 text-xs font-bold rounded-full transition-all ${itemsViewMode === mode ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`,
+                                    }, labels[mode]);
+                                })
                             )
                         ),
                         h('div', { className: "bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-center" },
                             h('p', { className: "text-slate-400 text-xs font-bold uppercase tracking-wider mb-1" }, "มูลค่ารวม"),
                             h('div', { className: "flex items-baseline gap-1" },
                                 h('span', { className: "text-xl font-bold text-indigo-600" }, "฿"),
-                                h('h3', { className: "text-4xl font-black text-indigo-600" }, stats.totalValue.toLocaleString())
+                                h('h3', { className: "text-4xl font-black text-indigo-600" }, totalValue.toLocaleString())
+                            ),
+                            h('div', { className: "flex gap-2 mt-3" },
+                                ['total', 'month', 'year'].map(mode => {
+                                    const labels = { total: 'ทั้งหมด', month: 'เดือนนี้', year: 'ปีนี้' };
+                                    return h('button', {
+                                        key: mode,
+                                        onClick: () => setTotalViewMode(mode),
+                                        className: `px-3 py-1 text-xs font-bold rounded-full transition-all ${totalViewMode === mode ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`,
+                                    }, labels[mode]);
+                                })
                             )
                         )
                     ),
 
-                    // Toolbar
-                    h('div', { className: "flex flex-col sm:flex-row justify-between items-center gap-4 mb-6" },
-                        h('div', { className: "relative w-full sm:max-w-md" },
-                            h(Icon, { name: "search", className: "absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" }),
-                            h('input', { 
-                                className: "w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all shadow-sm", 
-                                placeholder: "ค้นหารหัส หรือชื่อทรัพย์สิน...", 
-                                value: searchTerm, 
-                                onChange: e => setSearchTerm(e.target.value) 
-                            })
-                        ),
-                        h('button', { 
-                            onClick: () => openForm(),
-                            className: "w-full sm:w-auto bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-slate-200 transition-all"
-                        }, h(Icon, { name: "plus", className: "w-5 h-5" }), "เพิ่มครุภัณฑ์")
+                    h('div', { className: "sticky-toolbar" },
+                        h('div', { className: "flex flex-col sm:flex-row justify-between items-center gap-4" },
+                            h('div', { className: "relative w-full sm:max-w-md" },
+                                h(Icon, { name: "search", className: "absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" }),
+                                h('input', { 
+                                    className: "w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all shadow-sm", 
+                                    placeholder: "ค้นหารหัส, ชื่อ, หรือสถานที่...", 
+                                    value: searchTerm, 
+                                    onChange: e => setSearchTerm(e.target.value) 
+                                })
+                            ),
+                            h('div', { className: "flex gap-2 flex-wrap justify-center" },
+                                selectedIds.size > 0 && h('div', { className: "flex gap-2 mr-2" },
+                                    h('button', { 
+                                        onClick: () => {
+                                            if (confirm(`ลบ ${selectedIds.size} รายการ?`)) {
+                                                alert('ฟังก์ชันลบยังไม่เชื่อมต่อกับ GAS (ต้องเพิ่ม action delete)');
+                                            }
+                                        }, 
+                                        className: "bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
+                                    }, h(Icon, { name: "trash-2", className: "w-4 h-4" }), 
+                                      h('span', { className: "hidden sm:inline" }, "ลบ")),
+                                    h('button', { 
+                                        onClick: () => setShowPrintModal(true), 
+                                        className: "bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
+                                    }, h(Icon, { name: "printer", className: "w-4 h-4" }), 
+                                      h('span', { className: "hidden sm:inline" }, "พิมพ์บาร์โค้ด"))
+                                ),
+                                h('button', { 
+                                    onClick: () => setShowSortModal(true), 
+                                    className: "bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
+                                }, h(Icon, { name: "arrow-up-down", className: "w-4 h-4" }), 
+                                  h('span', { className: "hidden sm:inline" }, "จัดเรียง")),
+                                h('button', { 
+                                    onClick: () => setShowColumnModal(true), 
+                                    className: "bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
+                                }, h(Icon, { name: "columns", className: "w-4 h-4" }), 
+                                  h('span', { className: "hidden sm:inline" }, "จัดการคอลัมน์")),
+                                h('button', { 
+                                    onClick: () => openForm(),
+                                    className: "bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-slate-200 transition-all"
+                                }, h(Icon, { name: "plus", className: "w-5 h-5" }), 
+                                  h('span', { className: "hidden sm:inline" }, "เพิ่มครุภัณฑ์"))
+                            )
+                        )
                     ),
 
-                    // Table
-                    h('div', { className: "bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden" },
+                    h('div', { className: "bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden mt-4" },
                         h('div', { className: "overflow-x-auto" },
                             h('table', { className: "w-full text-left" },
                                 h('thead', { className: "bg-slate-50 border-b border-slate-100" },
                                     h('tr', null,
-                                        h('th', { className: "px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-wider" }, "รหัส/ชื่อ"),
-                                        h('th', { className: "px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-wider" }, "หมวดหมู่"),
-                                        h('th', { className: "px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-wider" }, "สถานะ"),
-                                        h('th', { className: "px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-wider text-right" }, "ราคา"),
-                                        h('th', { className: "px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-wider text-center" }, "จัดการ")
+                                        visibleColumns.map(col => {
+                                            if (col.key === 'checkbox') {
+                                                return h('th', { key: col.key, className: `px-6 py-4 w-10` },
+                                                    h('input', { type: "checkbox", checked: selectedIds.size === filteredAssets.length && filteredAssets.length > 0, onChange: selectAll })
+                                                );
+                                            }
+                                            return h('th', { key: col.key, className: `px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-wider ${col.align || ''}` },
+                                                col.label
+                                            );
+                                        })
                                     )
                                 ),
                                 h('tbody', { className: "divide-y divide-slate-50" },
-                                    filteredAssets.length === 0 ? 
-                                        h('tr', null, h('td', { colSpan: 5, className: "px-6 py-12 text-center text-slate-400 text-sm" }, "ไม่พบข้อมูลครุภัณฑ์")) :
-                                        filteredAssets.map(item => h('tr', { key: item.id || item.code, className: "hover:bg-slate-50/50 transition-colors group" },
-                                            h('td', { className: "px-6 py-4" },
-                                                h('div', { className: "flex items-center gap-4" },
-                                                    h('div', { className: "w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center" },
-                                                        item.image ? h('img', { src: item.image, className: "w-full h-full object-cover" }) : h(Icon, { name: "image", className: "w-4 h-4 text-slate-300" })
-                                                    ),
-                                                    h('div', null,
-                                                        h('p', { className: "text-xs font-bold text-indigo-600 mb-0.5" }, item.code),
-                                                        h('p', { className: "text-sm font-bold text-slate-700" }, item.name)
-                                                    )
-                                                )
-                                            ),
-                                            h('td', { className: "px-6 py-4" },
-                                                h('span', { className: "text-sm text-slate-600" }, item.category)
-                                            ),
-                                            h('td', { className: "px-6 py-4" },
-                                                h('span', { className: "text-xs font-bold px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-100" }, item.status || 'ปกติ')
-                                            ),
-                                            h('td', { className: "px-6 py-4 text-right" },
-                                                h('span', { className: "text-sm font-bold text-slate-800" }, "฿", Number(item.price || 0).toLocaleString())
-                                            ),
-                                            h('td', { className: "px-6 py-4 text-center" },
-                                                h('button', { 
-                                                    onClick: () => openForm(item),
-                                                    className: "text-slate-400 hover:text-indigo-600 p-2 rounded-lg hover:bg-indigo-50 transition-all" 
-                                                }, h(Icon, { name: "edit-2", className: "w-4 h-4" }))
-                                            )
+                                    sortedAssets.length === 0 ? 
+                                        h('tr', null, h('td', { colSpan: visibleColumns.length, className: "px-6 py-12 text-center text-slate-400 text-sm" }, "ไม่พบข้อมูลครุภัณฑ์")) :
+                                        sortedAssets.map(item => h('tr', { key: item.id || item.code, className: "hover:bg-slate-50/50 transition-colors group" },
+                                            visibleColumns.map(col => {
+                                                if (col.key === 'checkbox') {
+                                                    return h('td', { key: col.key, className: "px-6 py-4" },
+                                                        h('input', { type: "checkbox", checked: selectedIds.has(item.id), onChange: () => toggleSelect(item.id) })
+                                                    );
+                                                }
+                                                if (col.key === 'code') {
+                                                    return h('td', { key: col.key, className: "px-6 py-4" },
+                                                        h('div', { className: "flex items-center gap-4" },
+                                                            h('div', { className: "flex flex-col" },
+                                                                h('p', { className: "text-xs font-bold text-indigo-600 mb-0.5" }, item.code),
+                                                                h('p', { className: "text-sm font-bold text-slate-700" }, item.name)
+                                                            )
+                                                        )
+                                                    );
+                                                }
+                                                if (col.key === 'category') {
+                                                    return h('td', { key: col.key, className: "px-6 py-4" },
+                                                        h('span', { className: "text-sm text-slate-600" }, item.category)
+                                                    );
+                                                }
+                                                if (col.key === 'location') {
+                                                    return h('td', { key: col.key, className: "px-6 py-4" },
+                                                        h('span', { className: "text-sm text-slate-600" }, item.location || '-')
+                                                    );
+                                                }
+                                                if (col.key === 'price') {
+                                                    return h('td', { key: col.key, className: "px-6 py-4 text-right" },
+                                                        h('span', { className: "text-sm font-bold text-slate-800" }, "฿", Number(item.price || 0).toLocaleString())
+                                                    );
+                                                }
+                                                if (col.key === 'actions') {
+                                                    return h('td', { key: col.key, className: "px-6 py-4 text-center" },
+                                                        h('button', { 
+                                                            onClick: () => openForm(item),
+                                                            className: "text-slate-400 hover:text-indigo-600 p-2 rounded-lg hover:bg-indigo-50 transition-all" 
+                                                        }, h(Icon, { name: "edit-2", className: "w-4 h-4" }))
+                                                    );
+                                                }
+                                                return null;
+                                            })
                                         ))
                                 )
                             )
@@ -378,81 +1134,186 @@ function doGet(e) {
                     )
                 ),
 
-                // --- SLIDE-OVER FORM (Right) ---
+                showSortModal && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
+                    h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
+                        h('h3', { className: "text-lg font-bold mb-4" }, "จัดเรียงข้อมูล"),
+                        h('div', { className: "space-y-4" },
+                            sortRules.map((rule, index) => h('div', { key: index, className: "flex items-center gap-2" },
+                                h('span', { className: "text-sm" }, `${SORT_COLUMNS.find(c => c.value === rule.col)?.label} (${rule.dir === 'asc' ? 'น้อยไปมาก' : 'มากไปน้อย'})`),
+                                h('button', { onClick: () => removeSortRule(index), className: "text-red-500" }, h(Icon, { name: "x", className: "w-4 h-4" }))
+                            )),
+                            h('div', { className: "flex gap-2" },
+                                h('select', { id: "sortCol", className: "flex-1 p-2 border rounded-lg" },
+                                    SORT_COLUMNS.map(c => h('option', { key: c.value, value: c.value }, c.label))
+                                ),
+                                h('select', { id: "sortDir", className: "w-24 p-2 border rounded-lg" },
+                                    h('option', { value: "asc" }, "น้อยไปมาก"),
+                                    h('option', { value: "desc" }, "มากไปน้อย")
+                                ),
+                                h('button', { 
+                                    onClick: () => {
+                                        const col = document.getElementById('sortCol').value;
+                                        const dir = document.getElementById('sortDir').value;
+                                        addSortRule(col, dir);
+                                    }, 
+                                    className: "bg-indigo-600 text-white px-4 py-2 rounded-lg" 
+                                }, "เพิ่ม")
+                            )
+                        ),
+                        h('div', { className: "flex gap-2 mt-6" },
+                            h('button', { onClick: () => setShowSortModal(false), className: "flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold" }, "ตกลง"),
+                            h('button', { onClick: () => { setSortRules([]); setShowSortModal(false); }, className: "flex-1 bg-slate-200 py-2 rounded-lg font-bold" }, "ล้างทั้งหมด")
+                        )
+                    )
+                ),
+
+                showColumnModal && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
+                    h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
+                        h('h3', { className: "text-lg font-bold mb-4" }, "เลือกคอลัมน์ที่ต้องการแสดง"),
+                        h('div', { className: "space-y-2" },
+                            ALL_COLUMNS.filter(c => !c.always).map(col => 
+                                h('div', { key: col.key, className: "flex items-center gap-2" },
+                                    h('input', { 
+                                        type: "checkbox", 
+                                        id: `col-${col.key}`, 
+                                        checked: !hiddenColumns.includes(col.key), 
+                                        onChange: () => toggleColumn(col.key) 
+                                    }),
+                                    h('label', { htmlFor: `col-${col.key}`, className: "text-sm" }, col.label)
+                                )
+                            )
+                        ),
+                        h('div', { className: "flex gap-2 mt-6" },
+                            h('button', { onClick: () => setShowColumnModal(false), className: "flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold" }, "ปิด")
+                        )
+                    )
+                ),
+
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isFormOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isFormOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsFormOpen(false) }),
                     h('div', { className: `absolute inset-y-0 right-0 max-w-full flex transition-transform duration-300 ${isFormOpen ? 'translate-x-0' : 'translate-x-full'}` },
                         h('div', { className: "w-screen max-w-md md:max-w-lg bg-white shadow-2xl flex flex-col h-full" },
-                            // Header
                             h('div', { className: "px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-white" },
                                 h('h2', { className: "text-lg font-black text-slate-800" }, formData.id ? "แก้ไขข้อมูล" : "เพิ่มครุภัณฑ์ใหม่"),
                                 h('button', { onClick: () => setIsFormOpen(false), className: "p-2 hover:bg-slate-50 rounded-full transition-colors" }, h(Icon, { name: "x", className: "w-5 h-5 text-slate-400" }))
                             ),
-                            // Body
                             h('div', { className: "flex-1 overflow-y-auto p-6 custom-scroll bg-slate-50/50" },
                                 h('form', { onSubmit: handleSubmit, className: "space-y-6" },
-                                    // Image Section
-                                    h('div', { className: "flex flex-col items-center gap-3" },
-                                        h('div', { className: "w-full h-48 bg-white border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center overflow-hidden relative group" },
-                                            formData.image ? 
-                                                h('img', { src: formData.image, className: "w-full h-full object-contain" }) : 
-                                                h('div', { className: "text-center" }, 
-                                                    h('div', { className: "bg-slate-50 p-3 rounded-full inline-block mb-2" }, h(Icon, { name: "image", className: "w-6 h-6 text-slate-300" })),
-                                                    h('p', { className: "text-xs text-slate-400 font-medium" }, "ยังไม่มีรูปภาพ")
-                                                )
-                                        ),
-                                        h('div', { className: "flex gap-2 w-full" },
-                                            h('button', { type: "button", onClick: startCamera, className: "flex-1 bg-indigo-600 text-white py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition-all" }, h(Icon, { name: "camera", className: "w-4 h-4" }), "ถ่ายรูป"),
-                                            h('button', { type: "button", onClick: () => document.getElementById('fileIn').click(), className: "flex-1 bg-white border border-slate-200 text-slate-600 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 hover:bg-slate-50 transition-all" }, h(Icon, { name: "upload", className: "w-4 h-4" }), "เลือกไฟล์"),
-                                            h('input', { id: "fileIn", type: "file", className: "hidden", onChange: (e) => {
-                                                const r = new FileReader(); r.onload = (ev) => { const i = new Image(); i.onload = () => setFormData({...formData, image: compressImage(i)}); i.src = ev.target.result; }; r.readAsDataURL(e.target.files[0]);
-                                            }})
+                                    h('div', null,
+                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "บาร์โค้ดสินค้า"),
+                                        h('div', { className: "flex gap-2" },
+                                            h('input', { 
+                                                className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", 
+                                                value: formData.barcode, 
+                                                onChange: e => setFormData({...formData, barcode: e.target.value}) 
+                                            }),
+                                            h('button', { type: "button", onClick: () => setIsScanning(true), className: "bg-slate-100 text-slate-600 px-4 rounded-xl hover:bg-slate-200" }, h(Icon, { name: "scan" }))
                                         )
                                     ),
-                                    
-                                    // Inputs
-                                    h('div', { className: "space-y-4" },
+
+                                    h('div', null,
+                                        h('div', { className: "flex justify-between items-center mb-1.5" },
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "หมวดหมู่"),
+                                            h('button', { type: "button", onClick: () => openConfigEditor('categories'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
+                                        ),
+                                        h('select', { 
+                                            className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500",
+                                            value: formData.category,
+                                            onChange: e => setFormData({...formData, category: e.target.value, id: '', code: ''}) 
+                                        }, categories.sort((a,b) => a.order - b.order).map(c => h('option', { key: c.id, value: c.name }, c.name)))
+                                    ),
+
+                                    h('div', null,
+                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "รหัสทรัพย์สิน"),
+                                        h('input', { 
+                                            className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-mono font-bold text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500", 
+                                            value: formData.code, 
+                                            onChange: e => setFormData({...formData, code: e.target.value}) 
+                                        }),
+                                        barcodeDataURL && h('div', { className: "mt-2 p-2 bg-white border rounded-lg flex justify-between items-center" },
+                                            h('img', { src: barcodeDataURL, className: "h-12 object-contain" }),
+                                            h('button', { onClick: downloadBarcode, className: "text-indigo-600 hover:text-indigo-800" }, h(Icon, { name: "download" }))
+                                        )
+                                    ),
+
+                                    h('div', null,
+                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ชื่อรายการ"),
+                                        h('input', { required: true, className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.name, onChange: e => setFormData({...formData, name: e.target.value}) })
+                                    ),
+
+                                    h('div', null,
+                                        h('div', { className: "flex justify-between items-center mb-1.5" },
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานที่เก็บ"),
+                                            h('button', { type: "button", onClick: () => openConfigEditor('locations'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
+                                        ),
+                                        h('select', { 
+                                            className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500",
+                                            value: formData.location,
+                                            onChange: e => setFormData({...formData, location: e.target.value}) 
+                                        }, locations.sort((a,b) => a.order - b.order).map(l => h('option', { key: l.id, value: l.name }, l.name)))
+                                    ),
+
+                                    h('div', null,
+                                        h('div', { className: "flex justify-between items-center mb-1.5" },
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานะ"),
+                                            h('button', { type: "button", onClick: () => openConfigEditor('statuses'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
+                                        ),
+                                        h('select', { 
+                                            className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500",
+                                            value: formData.status,
+                                            onChange: e => setFormData({...formData, status: e.target.value}) 
+                                        }, statuses.sort((a,b) => a.order - b.order).map(s => h('option', { key: s.id, value: s.name }, s.name)))
+                                    ),
+
+                                    h('div', { className: "grid grid-cols-1 md:grid-cols-3 gap-4" },
                                         h('div', null,
-                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "หมวดหมู่"),
-                                            h('select', { 
-                                                className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all",
-                                                value: formData.category,
-                                                onChange: e => setFormData({...formData, category: e.target.value, id: '', code: ''}) 
-                                            }, Object.keys(CATEGORIES).map(c => h('option', { key: c, value: c }, c)))
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ราคา"),
+                                            h('input', { type: "number", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.price, onChange: e => setFormData({...formData, price: e.target.value}) })
                                         ),
                                         h('div', null,
-                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "รหัสทรัพย์สิน"),
-                                            h('div', { className: "flex gap-2" },
-                                                h('input', { 
-                                                    className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm font-mono font-bold text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500", 
-                                                    value: formData.code, 
-                                                    onChange: e => setFormData({...formData, code: e.target.value}) 
-                                                }),
-                                                h('button', { type: "button", onClick: () => { setIsScanning(true); setTimeout(() => {
-                                                    const qr = new Html5Qrcode("reader");
-                                                    scannerRef.current = qr;
-                                                    qr.start({ facingMode: "environment" }, { fps: 10, qrbox: 200 }, (txt) => { setFormData({...formData, code: txt}); qr.stop(); setIsScanning(false); });
-                                                }, 300)}, className: "bg-slate-100 text-slate-600 px-4 rounded-xl hover:bg-slate-200" }, h(Icon, { name: "scan" }))
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันที่"),
+                                            h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.date, onChange: e => setFormData({...formData, date: e.target.value}) })
+                                        )
+                                    ),
+
+                                    h('div', { className: "flex items-center gap-2" },
+                                        h('input', { type: "checkbox", id: "hasWarranty", checked: formData.hasWarranty, onChange: e => setFormData({...formData, hasWarranty: e.target.checked}) }),
+                                        h('label', { htmlFor: "hasWarranty", className: "text-sm font-medium text-slate-700" }, "มีประกัน")
+                                    ),
+
+                                    formData.hasWarranty && h('div', { className: "space-y-4 pl-6 border-l-2 border-indigo-200" },
+                                        h('div', { className: "grid grid-cols-2 gap-4" },
+                                            h('div', null,
+                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ปี"),
+                                                h('input', { type: "number", min: "0", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyYears, onChange: e => {
+                                                    const val = e.target.value;
+                                                    setFormData(prev => ({ ...prev, warrantyYears: val, warrantyEnd: '' }));
+                                                } })
+                                            ),
+                                            h('div', null,
+                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "เดือน"),
+                                                h('input', { type: "number", min: "0", max: "11", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyMonths, onChange: e => {
+                                                    const val = e.target.value;
+                                                    setFormData(prev => ({ ...prev, warrantyMonths: val, warrantyEnd: '' }));
+                                                } })
                                             )
-                                        ),
-                                        h('div', null,
-                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ชื่อรายการ"),
-                                            h('input', { required: true, className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.name, onChange: e => setFormData({...formData, name: e.target.value}) })
                                         ),
                                         h('div', { className: "grid grid-cols-2 gap-4" },
                                             h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ราคา"),
-                                                h('input', { type: "number", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.price, onChange: e => setFormData({...formData, price: e.target.value}) })
+                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันเริ่ม"),
+                                                h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyStart, onChange: e => setFormData({...formData, warrantyStart: e.target.value}) })
                                             ),
                                             h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "สถานที่เก็บ"),
-                                                h('input', { className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.location, onChange: e => setFormData({...formData, location: e.target.value}) })
+                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันหมด"),
+                                                h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyEnd, onChange: e => {
+                                                    const val = e.target.value;
+                                                    setFormData(prev => ({ ...prev, warrantyEnd: val, warrantyYears: '', warrantyMonths: '' }));
+                                                } })
                                             )
                                         )
                                     )
                                 )
                             ),
-                            // Footer
                             h('div', { className: "p-6 border-t border-slate-100 bg-white" },
                                 h('button', { 
                                     onClick: handleSubmit, 
@@ -464,7 +1325,55 @@ function doGet(e) {
                     )
                 ),
 
-                // --- SETTINGS SIDEBAR (Left) ---
+                h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isConfigOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
+                    h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isConfigOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsConfigOpen(false) }),
+                    h('div', { className: `absolute inset-y-0 left-0 max-w-full flex transition-transform duration-300 ${isConfigOpen ? 'translate-x-0' : '-translate-x-full'}` },
+                        h('div', { className: "w-screen max-w-sm bg-white shadow-2xl flex flex-col h-full" },
+                            h('div', { className: "px-6 py-4 border-b border-slate-100 flex justify-between items-center" },
+                                h('h2', { className: "text-lg font-black text-slate-800" }, 
+                                    configType === 'categories' ? 'จัดการหมวดหมู่' : configType === 'locations' ? 'จัดการสถานที่' : 'จัดการสถานะ'),
+                                h('button', { onClick: () => setIsConfigOpen(false), className: "p-2 hover:bg-slate-50 rounded-full" }, h(Icon, { name: "x", className: "w-5 h-5" }))
+                            ),
+                            h('div', { className: "flex-1 overflow-y-auto p-4 custom-scroll" },
+                                (configType === 'categories' ? categories : configType === 'locations' ? locations : statuses)
+                                    .sort((a,b) => a.order - b.order)
+                                    .map(item => h('div', { key: item.id, className: "flex items-center gap-2 mb-2 p-2 bg-slate-50 rounded-lg" },
+                                        h('button', { onClick: () => moveConfigItem(configType, item.id, 'up'), className: "text-slate-400 hover:text-indigo-600" }, h(Icon, { name: "chevron-up", className: "w-4 h-4" })),
+                                        h('button', { onClick: () => moveConfigItem(configType, item.id, 'down'), className: "text-slate-400 hover:text-indigo-600" }, h(Icon, { name: "chevron-down", className: "w-4 h-4" })),
+                                        configType === 'categories' && h('input', { 
+                                            className: "w-16 p-1 border rounded text-sm", 
+                                            placeholder: "Prefix",
+                                            value: item.prefix || 'X',
+                                            onChange: (e) => updateConfigItem(configType, item.id, 'prefix', e.target.value.toUpperCase())
+                                        }),
+                                        h('input', { 
+                                            className: "flex-1 p-2 border rounded-lg text-sm", 
+                                            value: item.name, 
+                                            onChange: (e) => updateConfigItem(configType, item.id, 'name', e.target.value) 
+                                        }),
+                                        h('button', { onClick: () => deleteConfigItem(configType, item.id), className: "text-red-400 hover:text-red-600" }, h(Icon, { name: "trash-2", className: "w-4 h-4" }))
+                                    )),
+                                h('div', { className: "mt-4 flex gap-2" },
+                                    h('input', { id: "newItemName", className: "flex-1 p-2 border rounded-lg text-sm", placeholder: "เพิ่มรายการ..." }),
+                                    h('button', { 
+                                        onClick: () => {
+                                            const input = document.getElementById('newItemName');
+                                            if (input.value.trim()) {
+                                                addConfigItem(configType, input.value.trim());
+                                                input.value = '';
+                                            }
+                                        }, 
+                                        className: "bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold" 
+                                    }, "เพิ่ม")
+                                )
+                            ),
+                            h('div', { className: "p-4 border-t" },
+                                h('button', { onClick: () => setIsConfigOpen(false), className: "w-full bg-slate-200 py-2 rounded-lg font-bold" }, "ปิด")
+                            )
+                        )
+                    )
+                ),
+
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isSettingsOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isSettingsOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsSettingsOpen(false) }),
                     h('div', { className: `absolute inset-y-0 left-0 max-w-full flex transition-transform duration-300 ${isSettingsOpen ? 'translate-x-0' : '-translate-x-full'}` },
@@ -474,26 +1383,39 @@ function doGet(e) {
                             ),
                             h('div', { className: "flex-1 overflow-y-auto p-6 custom-scroll" },
                                 h('div', { className: "space-y-6" },
-                                    h('div', null,
-                                        h('label', { className: "text-xs font-bold text-slate-400 uppercase mb-2 block" }, "Google Web App URL"),
+                                    h('div', { className: "flex items-center gap-2" },
+                                        h('label', { className: "text-xs font-bold text-slate-400 uppercase mb-2 block flex-1" }, "Google Web App URL"),
+                                        h('button', { 
+                                            onClick: () => { fetchData(); fetchConfig(); },
+                                            className: "bg-slate-200 hover:bg-slate-300 p-2 rounded-lg transition-colors",
+                                            title: "รีเฟรชข้อมูล"
+                                        }, h(Icon, { name: "refresh-cw", className: "w-5 h-5 text-slate-600" }))
+                                    ),
+                                    h('div', { className: "flex items-center gap-2" },
                                         h('input', { 
-                                            className: "w-full p-4 border border-slate-200 rounded-xl text-xs bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-500", 
+                                            className: "flex-1 p-4 border border-slate-200 rounded-xl text-xs bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-500", 
                                             value: scriptUrl, 
                                             onChange: e => setScriptUrl(e.target.value), 
                                             placeholder: "https://script.google.com/..." 
                                         }),
-                                        h('button', { 
-                                            onClick: () => { localStorage.setItem('mt_script_url', scriptUrl); setIsSettingsOpen(false); fetchData(); }, 
-                                            className: "w-full mt-3 bg-indigo-600 text-white py-3 rounded-xl font-bold text-sm shadow-indigo-100 shadow-lg" 
-                                        }, "บันทึกและเชื่อมต่อ")
                                     ),
+                                    h('button', { 
+                                        onClick: () => { localStorage.setItem('mt_script_url', scriptUrl); setIsSettingsOpen(false); fetchData(); fetchConfig(); }, 
+                                        className: "w-full mt-3 bg-indigo-600 text-white py-3 rounded-xl font-bold text-sm shadow-indigo-100 shadow-lg" 
+                                    }, "บันทึกและเชื่อมต่อ"),
+                                    h('button', { 
+                                        onClick: () => setShowInstructions(true), 
+                                        className: "w-full mt-3 bg-slate-100 text-slate-700 py-3 rounded-xl font-bold text-sm border border-slate-200 flex items-center justify-center gap-2"
+                                    }, h(Icon, { name: "help-circle", className: "w-4 h-4" }), 
+                                      h('span', { className: "hidden sm:inline" }, "ดูวิธีรับลิงก์ GAS")),
                                     h('div', { className: "bg-slate-50 p-4 rounded-2xl border border-slate-100" },
                                         h('h4', { className: "font-bold text-sm text-slate-700 mb-2 flex items-center gap-2" }, h(Icon, { name: "code", className: "w-4 h-4" }), "สำหรับผู้ดูแลระบบ"),
-                                        h('p', { className: "text-xs text-slate-500 mb-4 leading-relaxed" }, "คัดลอกโค้ดด้านล่างไปวางใน Apps Script เพื่ออัปเดตระบบหลังบ้านให้รองรับการบันทึกรูปภาพ"),
+                                        h('p', { className: "text-xs text-slate-500 mb-4 leading-relaxed" }, "คัดลอกโค้ดด้านล่างไปวางใน Apps Script (แบ่งเป็น 2 แท็บ: Asset และ Dropdown) บันทึกเป็น CSV อ่านง่าย"),
                                         h('button', { 
-                                            onClick: copyToClipboard, 
+                                            onClick: () => { navigator.clipboard.writeText(GAS_CODE_TEMPLATE); setCopied(true); setTimeout(() => setCopied(false), 2000); }, 
                                             className: `w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all border ${copied ? 'bg-green-50 text-green-600 border-green-200' : 'bg-white text-slate-600 border-slate-200'}` 
-                                        }, h(Icon, { name: copied ? "check" : "copy", className: "w-3.5 h-3.5" }), copied ? "คัดลอกเรียบร้อย" : "คัดลอก Code")
+                                        }, h(Icon, { name: copied ? "check" : "copy", className: "w-3.5 h-3.5" }), 
+                                          h('span', { className: "hidden sm:inline" }, copied ? "คัดลอกเรียบร้อย" : "คัดลอก Code"))
                                     )
                                 )
                             )
@@ -501,19 +1423,52 @@ function doGet(e) {
                     )
                 ),
 
-                // --- OVERLAYS ---
+                showInstructions && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
+                    h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
+                        h('h3', { className: "text-lg font-bold mb-4" }, "วิธีรับลิงก์ GAS"),
+                        h('ol', { className: "list-decimal list-inside space-y-2 text-sm text-slate-600" },
+                            h('li', null, "เปิด Google Sheet ที่ต้องการใช้เป็นฐานข้อมูล"),
+                            h('li', null, "ไปที่ส่วนขยาย (Extensions) > Apps Script"),
+                            h('li', null, "วางโค้ดที่คัดลอกจาก 'คัดลอก Code' ลงในไฟล์ Code.gs"),
+                            h('li', null, "บันทึก (กด Save) และกด Deploy > New deployment"),
+                            h('li', null, "เลือก Type เป็น Web App, ตั้งค่า Execute as เป็น 'Me', Who has access เป็น 'Anyone'"),
+                            h('li', null, "กด Deploy และคัดลอก URL ที่ได้มาใส่ในช่องด้านบน")
+                        ),
+                        h('button', { onClick: () => setShowInstructions(false), className: "mt-6 w-full bg-indigo-600 text-white py-2 rounded-lg font-bold" }, "ปิด")
+                    )
+                ),
+
+                showPrintModal && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
+                    h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
+                        h('h3', { className: "text-lg font-bold mb-4" }, "พิมพ์บาร์โค้ด"),
+                        h('div', { className: "space-y-4" },
+                            h('div', null,
+                                h('label', { className: "block text-sm font-medium mb-1" }, "ขนาดบาร์โค้ด"),
+                                h('select', { value: printSize, onChange: e => setPrintSize(e.target.value), className: "w-full p-2 border rounded-lg" },
+                                    h('option', { value: "S" }, "เล็ก (S)"),
+                                    h('option', { value: "M" }, "กลาง (M)"),
+                                    h('option', { value: "L" }, "ใหญ่ (L)")
+                                )
+                            ),
+                            h('div', null,
+                                h('label', { className: "block text-sm font-medium mb-1" }, "ขนาดกระดาษ"),
+                                h('select', { value: printPaper, onChange: e => setPrintPaper(e.target.value), className: "w-full p-2 border rounded-lg" },
+                                    h('option', { value: "A4" }, "A4"),
+                                    h('option', { value: "A5" }, "A5"),
+                                    h('option', { value: "Letter" }, "Letter")
+                                )
+                            )
+                        ),
+                        h('div', { className: "flex gap-2 mt-6" },
+                            h('button', { onClick: printBarcodes, className: "flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold" }, "พิมพ์"),
+                            h('button', { onClick: () => setShowPrintModal(false), className: "flex-1 bg-slate-200 py-2 rounded-lg font-bold" }, "ยกเลิก")
+                        )
+                    )
+                ),
+
                 isScanning && h('div', { className: "fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-6" },
                     h('div', { className: "w-full max-w-sm rounded-2xl overflow-hidden bg-white relative" }, h('div', { id: "reader" })),
                     h('button', { onClick: () => { if(scannerRef.current) scannerRef.current.stop(); setIsScanning(false); }, className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
-                ),
-                isCapturing && h('div', { className: "fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-4" },
-                    h('div', { className: "w-full max-w-sm rounded-2xl overflow-hidden bg-slate-900 shadow-2xl border border-slate-800" },
-                        h('video', { ref: videoRef, autoPlay: true, playsInline: true, className: "w-full aspect-square object-cover" })
-                    ),
-                    h('div', { className: "flex gap-4 mt-8" },
-                        h('button', { onClick: stopCamera, className: "bg-white/10 text-white px-6 py-3 rounded-full font-bold" }, "ยกเลิก"),
-                        h('button', { onClick: takePhoto, className: "bg-indigo-600 text-white px-10 py-3 rounded-full font-bold shadow-xl flex items-center gap-2" }, h(Icon, { name: "camera", className: "w-5 h-5" }), "ถ่ายเลย")
-                    )
                 )
             );
         }
