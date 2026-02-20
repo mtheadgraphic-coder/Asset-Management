@@ -10,6 +10,7 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://unpkg.com/html5-qrcode"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Kanit', sans-serif; background-color: #f3f4f6; }
@@ -48,6 +49,10 @@
         .dragging {
             opacity: 0.5;
             background: #e0f2fe;
+        }
+        #reader {
+            width: 100%;
+            height: auto;
         }
     </style>
 </head>
@@ -384,8 +389,10 @@ function doGet(e) {
             const [showSortModal, setShowSortModal] = useState(false);
             const [hiddenColumns, setHiddenColumns] = useState([]);
             const [showColumnModal, setShowColumnModal] = useState(false);
-            const [isScanning, setIsScanning] = useState(false);
-            const scannerRef = useRef(null);
+            const [isScanningForm, setIsScanningForm] = useState(false);
+            const [isScanningSearch, setIsScanningSearch] = useState(false);
+            const scannerFormRef = useRef(null);
+            const scannerSearchRef = useRef(null);
             const [syncStatus, setSyncStatus] = useState('idle');
             const [copied, setCopied] = useState(false);
             const [totalViewMode, setTotalViewMode] = useState('total');
@@ -488,7 +495,7 @@ function doGet(e) {
                 }
             }, [assets]);
 
-            useEffect(() => { refreshIcons(); }, [assets, loading, isScanning, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount, categories, locations, statuses]);
+            useEffect(() => { refreshIcons(); }, [assets, loading, isScanningForm, isScanningSearch, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount, categories, locations, statuses]);
 
             useEffect(() => {
                 if (scriptUrl) {
@@ -729,8 +736,6 @@ function doGet(e) {
                 
                 setIsFormOpen(false);
                 
-                await saveAssetsToIndexedDB(assets); // but assets not updated yet, we'll save later via useEffect
-                
                 if (!isOnline) {
                     await addPending(formData, action);
                     setPendingCount(prev => prev + 1);
@@ -872,6 +877,79 @@ function doGet(e) {
             const handleDragEnd = (e) => {
                 setDraggedItemId(null);
                 e.target.classList.remove('dragging');
+            };
+
+            // Scanner functions
+            const startScanner = (type, targetRef) => {
+                if (!targetRef.current) {
+                    targetRef.current = new Html5Qrcode("reader");
+                }
+                const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+                targetRef.current.start(
+                    { facingMode: "environment" },
+                    config,
+                    (decodedText) => {
+                        // เมื่อสแกนได้
+                        if (type === 'form') {
+                            setFormData(prev => ({ ...prev, barcode: decodedText }));
+                            stopScanner(type);
+                        } else if (type === 'search') {
+                            setSearchTerm(decodedText);
+                            stopScanner(type);
+                        }
+                    },
+                    (error) => console.warn(error)
+                ).catch(err => console.error(err));
+            };
+
+            const stopScanner = (type) => {
+                if (type === 'form' && scannerFormRef.current) {
+                    scannerFormRef.current.stop().then(() => {
+                        setIsScanningForm(false);
+                        scannerFormRef.current = null;
+                    }).catch(err => console.error(err));
+                } else if (type === 'search' && scannerSearchRef.current) {
+                    scannerSearchRef.current.stop().then(() => {
+                        setIsScanningSearch(false);
+                        scannerSearchRef.current = null;
+                    }).catch(err => console.error(err));
+                }
+            };
+
+            // Download barcodes as zip
+            const downloadBarcodesZip = async () => {
+                const selectedItems = assets.filter(a => selectedIds.has(a.id));
+                if (selectedItems.length === 0) return;
+
+                const zip = new JSZip();
+                const folder = zip.folder("barcodes");
+
+                for (let item of selectedItems) {
+                    const canvas = document.createElement('canvas');
+                    try {
+                        JsBarcode(canvas, item.code, {
+                            format: "CODE128",
+                            lineColor: "#000",
+                            width: 2,
+                            height: 50,
+                            displayValue: true,
+                            fontSize: 12,
+                            text: `${item.name} - ${item.code}`
+                        });
+                        const dataURL = canvas.toDataURL("image/png");
+                        const base64Data = dataURL.split(',')[1];
+                        folder.file(`${item.code}.png`, base64Data, { base64: true });
+                    } catch (e) {
+                        console.error(e);
+                    }
+                }
+
+                const content = await zip.generateAsync({ type: "blob" });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(content);
+                link.download = `barcodes-${Date.now()}.zip`;
+                link.click();
+                URL.revokeObjectURL(link.href);
             };
 
             const filteredAssets = useMemo(() => {
@@ -1073,17 +1151,36 @@ function doGet(e) {
 
                     h('div', { className: "sticky-toolbar" },
                         h('div', { className: "flex flex-col sm:flex-row justify-between items-center gap-4" },
-                            h('div', { className: "relative w-full sm:max-w-md" },
-                                h(Icon, { name: "search", className: "absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" }),
-                                h('input', { 
-                                    className: "w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all shadow-sm", 
-                                    placeholder: "ค้นหารหัส, ชื่อ, หรือสถานที่...", 
-                                    value: searchTerm, 
-                                    onChange: e => setSearchTerm(e.target.value) 
-                                })
+                            h('div', { className: "relative w-full sm:max-w-md flex items-center gap-2" },
+                                h('div', { className: "relative flex-1" },
+                                    h(Icon, { name: "search", className: "absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" }),
+                                    h('input', { 
+                                        className: "w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all shadow-sm", 
+                                        placeholder: "ค้นหารหัส, ชื่อ, หรือสถานที่...", 
+                                        value: searchTerm, 
+                                        onChange: e => setSearchTerm(e.target.value) 
+                                    })
+                                ),
+                                h('button', { 
+                                    onClick: () => {
+                                        if (isScanningSearch) {
+                                            stopScanner('search');
+                                        } else {
+                                            setIsScanningSearch(true);
+                                            setTimeout(() => startScanner('search', scannerSearchRef), 100);
+                                        }
+                                    },
+                                    className: `p-3 rounded-xl ${isScanningSearch ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'} hover:bg-slate-200 transition-all`,
+                                    title: "สแกนบาร์โค้ดเพื่อค้นหา"
+                                }, h(Icon, { name: "camera", className: "w-5 h-5" }))
                             ),
                             h('div', { className: "flex gap-2 flex-wrap justify-center" },
                                 selectedIds.size > 0 && h('div', { className: "flex gap-2 mr-2" },
+                                    h('button', { 
+                                        onClick: downloadBarcodesZip, 
+                                        className: "bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
+                                    }, h(Icon, { name: "download", className: "w-4 h-4" }), 
+                                      h('span', { className: "hidden sm:inline" }, "ดาวน์โหลดบาร์โค้ด")),
                                     h('button', { 
                                         onClick: () => {
                                             if (confirm(`ลบ ${selectedIds.size} รายการ?`)) {
@@ -1187,6 +1284,12 @@ function doGet(e) {
                     )
                 ),
 
+                // Scanner modal สำหรับค้นหา
+                isScanningSearch && h('div', { className: "fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-6" },
+                    h('div', { className: "w-full max-w-sm rounded-2xl overflow-hidden bg-white relative" }, h('div', { id: "reader" })),
+                    h('button', { onClick: () => stopScanner('search'), className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
+                ),
+
                 showSortModal && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
                     h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
                         h('h3', { className: "text-lg font-bold mb-4" }, "จัดเรียงข้อมูล"),
@@ -1260,7 +1363,18 @@ function doGet(e) {
                                                 value: formData.barcode, 
                                                 onChange: e => setFormData({...formData, barcode: e.target.value}) 
                                             }),
-                                            h('button', { type: "button", onClick: () => setIsScanning(true), className: "bg-slate-100 text-slate-600 px-4 rounded-xl hover:bg-slate-200" }, h(Icon, { name: "scan" }))
+                                            h('button', { 
+                                                type: "button", 
+                                                onClick: () => {
+                                                    if (isScanningForm) {
+                                                        stopScanner('form');
+                                                    } else {
+                                                        setIsScanningForm(true);
+                                                        setTimeout(() => startScanner('form', scannerFormRef), 100);
+                                                    }
+                                                }, 
+                                                className: `px-4 rounded-xl ${isScanningForm ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'} hover:bg-slate-200 flex items-center justify-center`
+                                            }, h(Icon, { name: "camera", className: "w-5 h-5" }))
                                         )
                                     ),
 
@@ -1378,6 +1492,12 @@ function doGet(e) {
                     )
                 ),
 
+                // Scanner modal สำหรับฟอร์ม
+                isScanningForm && h('div', { className: "fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-6" },
+                    h('div', { className: "w-full max-w-sm rounded-2xl overflow-hidden bg-white relative" }, h('div', { id: "reader" })),
+                    h('button', { onClick: () => stopScanner('form'), className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
+                ),
+
                 // Config Editor with Drag and Drop
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isConfigOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isConfigOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsConfigOpen(false) }),
@@ -1444,8 +1564,9 @@ function doGet(e) {
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isSettingsOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsSettingsOpen(false) }),
                     h('div', { className: `absolute inset-y-0 left-0 max-w-full flex transition-transform duration-300 ${isSettingsOpen ? 'translate-x-0' : '-translate-x-full'}` },
                         h('div', { className: "w-screen max-w-sm bg-white shadow-2xl flex flex-col h-full" },
-                            h('div', { className: "px-6 py-6 border-b border-slate-100" },
-                                h('h2', { className: "text-xl font-black text-slate-800 flex items-center gap-2" }, h(Icon, { name: "settings", className: "w-6 h-6 text-indigo-600" }), "ตั้งค่าระบบ")
+                            h('div', { className: "px-6 py-6 border-b border-slate-100 flex justify-between items-center" },
+                                h('h2', { className: "text-xl font-black text-slate-800 flex items-center gap-2" }, h(Icon, { name: "settings", className: "w-6 h-6 text-indigo-600" }), "ตั้งค่าระบบ"),
+                                h('button', { onClick: () => setIsSettingsOpen(false), className: "p-2 hover:bg-slate-50 rounded-full" }, h(Icon, { name: "x", className: "w-5 h-5 text-slate-400" }))
                             ),
                             h('div', { className: "flex-1 overflow-y-auto p-6 custom-scroll" },
                                 h('div', { className: "space-y-6" },
@@ -1530,11 +1651,6 @@ function doGet(e) {
                             h('button', { onClick: () => setShowPrintModal(false), className: "flex-1 bg-slate-200 py-2 rounded-lg font-bold" }, "ยกเลิก")
                         )
                     )
-                ),
-
-                isScanning && h('div', { className: "fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-6" },
-                    h('div', { className: "w-full max-w-sm rounded-2xl overflow-hidden bg-white relative" }, h('div', { id: "reader" })),
-                    h('button', { onClick: () => { if(scannerRef.current) scannerRef.current.stop(); setIsScanning(false); }, className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
                 )
             );
         }
