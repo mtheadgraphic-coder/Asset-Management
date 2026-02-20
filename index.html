@@ -897,7 +897,6 @@ function doGet(e) {
                 } catch (e) {}
             };
 
-            // ฟังก์ชันนำเข้าข้อมูลจาก Backup
             const importFromBackup = async () => {
                 if (!scriptUrl) { setIsSettingsOpen(true); return; }
                 try {
@@ -1007,9 +1006,11 @@ function doGet(e) {
                     });
                     setShowBarcodeInput(!!(item.barcode));
                 } else {
+                    // กำหนดวันที่เป็นวันนี้โดยอัตโนมัติ
+                    const today = new Date().toISOString().split('T')[0];
                     setFormData({ 
                         id: '', code: '', name: '', category: categories[0]?.name || 'สื่อคณิตศาสตร์', 
-                        price: '', location: '', date: new Date().toISOString().split('T')[0], 
+                        price: '', location: '', date: today, 
                         status: statuses[0]?.name || 'ใช้งานได้',
                         barcode: '',
                         hasWarranty: false,
