@@ -54,20 +54,12 @@
             width: 100%;
             height: auto;
         }
-        /* Mobile checkbox visibility */
-        .mobile-checkbox-hidden .checkbox-col {
+        /* Checkbox column visibility */
+        .checkbox-hidden .checkbox-col {
             display: none;
         }
-        .mobile-checkbox-visible .checkbox-col {
+        .checkbox-visible .checkbox-col {
             display: table-cell;
-        }
-        @media (max-width: 640px) {
-            .desktop-only {
-                display: none;
-            }
-            .mobile-action-button {
-                display: inline-flex;
-            }
         }
         .action-button-group {
             display: flex;
@@ -437,7 +429,7 @@ function doGet(e) {
             const [copied, setCopied] = useState(false);
             const [totalViewMode, setTotalViewMode] = useState('total');
             const [itemsViewMode, setItemsViewMode] = useState('total');
-            const [showSummary, setShowSummary] = useState(false); // เริ่มต้นซ่อน
+            const [showSummary, setShowSummary] = useState(false);
             const [selectedIds, setSelectedIds] = useState(new Set());
             const [showPrintModal, setShowPrintModal] = useState(false);
             const [printSize, setPrintSize] = useState('M');
@@ -470,7 +462,7 @@ function doGet(e) {
             const [showInstructions, setShowInstructions] = useState(false);
             const [isOnline, setIsOnline] = useState(navigator.onLine);
             const [pendingCount, setPendingCount] = useState(0);
-            const [showMobileCheckbox, setShowMobileCheckbox] = useState(false); // สำหรับมือถือ
+            const [showCheckbox, setShowCheckbox] = useState(true); // ควบคุมการแสดง checkbox column
 
             // Drag and drop states
             const [draggedItemId, setDraggedItemId] = useState(null);
@@ -724,10 +716,10 @@ function doGet(e) {
                     JsBarcode(canvas, formData.code, {
                         format: "CODE128",
                         lineColor: "#000",
-                        width: 3,          // เพิ่มความกว้าง
-                        height: 80,         // เพิ่มความสูง
+                        width: 3,
+                        height: 80,
                         displayValue: true,
-                        fontSize: 16,        // เพิ่มขนาดตัวอักษร
+                        fontSize: 16,
                         text: `${formData.name} - ${formData.code}`
                     });
                     setBarcodeDataURL(canvas.toDataURL("image/png"));
@@ -888,6 +880,17 @@ function doGet(e) {
                 }
             };
 
+            // รีเซ็ตเป็นค่าเริ่มต้น
+            const resetConfig = () => {
+                if (configType === 'categories') {
+                    setCategories(DEFAULT_CATEGORIES);
+                } else if (configType === 'locations') {
+                    setLocations(DEFAULT_LOCATIONS);
+                } else {
+                    setStatuses(DEFAULT_STATUSES);
+                }
+            };
+
             // Drag and drop handlers
             const handleDragStart = (e, itemId) => {
                 setDraggedItemId(itemId);
@@ -1010,11 +1013,12 @@ function doGet(e) {
             const filteredAssets = useMemo(() => {
                 const term = searchTerm.toLowerCase().trim();
                 if (!term) return assets;
-                return assets.filter(a => 
-                    (a.code || '').toLowerCase().includes(term) || 
-                    (a.name || '').toLowerCase().includes(term) || 
-                    (a.location || '').toLowerCase().includes(term)
-                );
+                return assets.filter(a => {
+                    const code = (a.code || '').toLowerCase();
+                    const name = (a.name || '').toLowerCase();
+                    const location = (a.location || '').toLowerCase();
+                    return code.includes(term) || name.includes(term) || location.includes(term);
+                });
             }, [assets, searchTerm]);
 
             const sortedAssets = useMemo(() => {
@@ -1155,6 +1159,11 @@ function doGet(e) {
                                     h('span', { className: "text-xs font-bold" }, syncStatus === 'success' ? 'Cloud Synced' : syncStatus === 'syncing' ? 'Syncing...' : 'Standby')
                                 ),
                                 h('button', { 
+                                    onClick: () => openConfigEditor('categories'),
+                                    className: "flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-lg font-semibold text-sm transition-all" 
+                                }, h(Icon, { name: "list", className: "w-4 h-4" }), 
+                                  h('span', { className: "hidden sm:inline" }, "จัดการ Dropdown")),
+                                h('button', { 
                                     onClick: () => setShowSummary(!showSummary), 
                                     className: "flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-2 rounded-lg font-semibold text-sm transition-all" 
                                 }, h(Icon, { name: "bar-chart-2", className: "w-4 h-4" }), 
@@ -1233,15 +1242,15 @@ function doGet(e) {
                                     },
                                     className: `p-3 rounded-xl ${isScanningSearch ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'} hover:bg-slate-200 transition-all`,
                                     title: "สแกนบาร์โค้ดเพื่อค้นหา"
-                                }, h(Icon, { name: "camera", className: "w-5 h-5" }))
+                                }, h(Icon, { name: "scan-barcode", className: "w-5 h-5" }))
                             ),
                             h('div', { className: "action-button-group" },
-                                // ปุ่มเลือกสำหรับมือถือ
+                                // ปุ่มแสดง/ซ่อน checkbox
                                 h('button', { 
-                                    onClick: () => setShowMobileCheckbox(!showMobileCheckbox),
-                                    className: "sm:hidden action-icon-button",
-                                    title: "เลือก"
-                                }, h(Icon, { name: showMobileCheckbox ? "check-square" : "square", className: "w-5 h-5" })),
+                                    onClick: () => setShowCheckbox(!showCheckbox),
+                                    className: `action-icon-button ${showCheckbox ? 'active' : ''}`,
+                                    title: showCheckbox ? "ซ่อนช่องเลือก" : "แสดงช่องเลือก"
+                                }, h(Icon, { name: "check-square", className: "w-5 h-5" })),
                                 selectedIds.size > 0 && h('div', { className: "flex gap-2 mr-2" },
                                     h('button', { 
                                         onClick: downloadBarcodesZip, 
@@ -1283,7 +1292,7 @@ function doGet(e) {
                     ),
 
                     // Table
-                    h('div', { className: `bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden mt-4 ${showMobileCheckbox ? 'mobile-checkbox-visible' : 'mobile-checkbox-hidden'}` },
+                    h('div', { className: `bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden mt-4 ${showCheckbox ? 'checkbox-visible' : 'checkbox-hidden'}` },
                         h('div', { className: "overflow-x-auto" },
                             h('table', { className: "w-full text-left" },
                                 h('thead', { className: "bg-slate-50 border-b border-slate-100" },
@@ -1445,7 +1454,7 @@ function doGet(e) {
                                                     }
                                                 }, 
                                                 className: `px-4 rounded-xl ${isScanningForm ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'} hover:bg-slate-200 flex items-center justify-center`
-                                            }, h(Icon, { name: "camera", className: "w-5 h-5" }))
+                                            }, h(Icon, { name: "scan-barcode", className: "w-5 h-5" }))
                                         )
                                     ),
 
@@ -1576,7 +1585,7 @@ function doGet(e) {
                     h('button', { onClick: () => stopScanner('form'), className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
                 ),
 
-                // Config Editor with Drag and Drop
+                // Config Editor with Drag and Drop, Reset and Backup buttons
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isConfigOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isConfigOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsConfigOpen(false) }),
                     h('div', { className: `absolute inset-y-0 left-0 max-w-full flex transition-transform duration-300 ${isConfigOpen ? 'translate-x-0' : '-translate-x-full'}` },
@@ -1584,7 +1593,19 @@ function doGet(e) {
                             h('div', { className: "px-6 py-4 border-b border-slate-100 flex justify-between items-center" },
                                 h('h2', { className: "text-lg font-black text-slate-800" }, 
                                     configType === 'categories' ? 'จัดการหมวดหมู่' : configType === 'locations' ? 'จัดการสถานที่' : 'จัดการสถานะ'),
-                                h('button', { onClick: () => setIsConfigOpen(false), className: "p-2 hover:bg-slate-50 rounded-full" }, h(Icon, { name: "x", className: "w-5 h-5" }))
+                                h('div', { className: "flex gap-2" },
+                                    h('button', { 
+                                        onClick: resetConfig,
+                                        className: "text-indigo-600 hover:text-indigo-800 p-2 rounded-lg hover:bg-indigo-50",
+                                        title: "คืนค่าเริ่มต้น"
+                                    }, h(Icon, { name: "rotate-ccw", className: "w-5 h-5" })),
+                                    h('button', { 
+                                        onClick: saveConfigToSheet,
+                                        className: "text-green-600 hover:text-green-800 p-2 rounded-lg hover:bg-green-50",
+                                        title: "ส่งออกข้อมูล"
+                                    }, h(Icon, { name: "upload", className: "w-5 h-5" })),
+                                    h('button', { onClick: () => setIsConfigOpen(false), className: "p-2 hover:bg-slate-50 rounded-full" }, h(Icon, { name: "x", className: "w-5 h-5" }))
+                                )
                             ),
                             h('div', { className: "flex-1 overflow-y-auto p-4 custom-scroll" },
                                 (configType === 'categories' ? categories : configType === 'locations' ? locations : statuses)
