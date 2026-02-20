@@ -2,7 +2,7 @@
 <html lang="th">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title>Math Talent Asset Management</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -53,6 +53,46 @@
         #reader {
             width: 100%;
             height: auto;
+        }
+        /* Mobile checkbox visibility */
+        .mobile-checkbox-hidden .checkbox-col {
+            display: none;
+        }
+        .mobile-checkbox-visible .checkbox-col {
+            display: table-cell;
+        }
+        @media (max-width: 640px) {
+            .desktop-only {
+                display: none;
+            }
+            .mobile-action-button {
+                display: inline-flex;
+            }
+        }
+        .action-button-group {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .action-icon-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 9999px;
+            background-color: #f1f5f9;
+            color: #475569;
+            transition: all 0.2s;
+        }
+        .action-icon-button:hover {
+            background-color: #e2e8f0;
+            color: #1e293b;
+        }
+        .action-icon-button.active {
+            background-color: #818cf8;
+            color: white;
         }
     </style>
 </head>
@@ -189,7 +229,7 @@
             return tx.complete;
         };
 
-        // GAS CODE TEMPLATE (removed Other sheet)
+        // GAS CODE TEMPLATE (removed Other sheet, added warrantyDays)
         const GAS_CODE_TEMPLATE = `function doPost(e) {
   var prop = ContentService.MimeType.JSON;
   try {
@@ -203,7 +243,7 @@
       var assetSheet = ss.getSheetByName('Asset');
       if (!assetSheet) {
         assetSheet = ss.insertSheet('Asset');
-        var assetHeaders = ['id', 'code', 'name', 'category', 'price', 'location', 'date', 'status', 'barcode', 'hasWarranty', 'warrantyYears', 'warrantyMonths', 'warrantyStart', 'warrantyEnd'];
+        var assetHeaders = ['id', 'code', 'name', 'category', 'price', 'location', 'date', 'status', 'barcode', 'hasWarranty', 'warrantyYears', 'warrantyMonths', 'warrantyDays', 'warrantyStart', 'warrantyEnd'];
         assetSheet.appendRow(assetHeaders);
       }
       
@@ -397,7 +437,7 @@ function doGet(e) {
             const [copied, setCopied] = useState(false);
             const [totalViewMode, setTotalViewMode] = useState('total');
             const [itemsViewMode, setItemsViewMode] = useState('total');
-            const [showSummary, setShowSummary] = useState(true);
+            const [showSummary, setShowSummary] = useState(false); // เริ่มต้นซ่อน
             const [selectedIds, setSelectedIds] = useState(new Set());
             const [showPrintModal, setShowPrintModal] = useState(false);
             const [printSize, setPrintSize] = useState('M');
@@ -422,6 +462,7 @@ function doGet(e) {
                 hasWarranty: false,
                 warrantyYears: '',
                 warrantyMonths: '',
+                warrantyDays: '',
                 warrantyStart: '',
                 warrantyEnd: ''
             });
@@ -429,6 +470,7 @@ function doGet(e) {
             const [showInstructions, setShowInstructions] = useState(false);
             const [isOnline, setIsOnline] = useState(navigator.onLine);
             const [pendingCount, setPendingCount] = useState(0);
+            const [showMobileCheckbox, setShowMobileCheckbox] = useState(false); // สำหรับมือถือ
 
             // Drag and drop states
             const [draggedItemId, setDraggedItemId] = useState(null);
@@ -528,21 +570,24 @@ function doGet(e) {
                 }
             }, [formData.code, formData.name]);
 
+            // Auto-calculate warranty end date
             useEffect(() => {
                 if (!formData.hasWarranty) return;
-                if (formData.warrantyStart && (formData.warrantyYears || formData.warrantyMonths)) {
+                if (formData.warrantyStart && (formData.warrantyYears || formData.warrantyMonths || formData.warrantyDays)) {
                     const start = new Date(formData.warrantyStart);
                     const years = parseInt(formData.warrantyYears) || 0;
                     const months = parseInt(formData.warrantyMonths) || 0;
+                    const days = parseInt(formData.warrantyDays) || 0;
                     const end = new Date(start);
                     end.setFullYear(end.getFullYear() + years);
                     end.setMonth(end.getMonth() + months);
+                    end.setDate(end.getDate() + days);
                     const endStr = end.toISOString().split('T')[0];
                     if (endStr !== formData.warrantyEnd) {
                         setFormData(prev => ({ ...prev, warrantyEnd: endStr }));
                     }
                 }
-            }, [formData.warrantyStart, formData.warrantyYears, formData.warrantyMonths, formData.hasWarranty]);
+            }, [formData.warrantyStart, formData.warrantyYears, formData.warrantyMonths, formData.warrantyDays, formData.hasWarranty]);
 
             useEffect(() => {
                 if (!formData.hasWarranty) return;
@@ -552,14 +597,21 @@ function doGet(e) {
                     if (end > start) {
                         let years = end.getFullYear() - start.getFullYear();
                         let months = end.getMonth() - start.getMonth();
+                        let days = end.getDate() - start.getDate();
+                        if (days < 0) {
+                            months -= 1;
+                            const prevMonth = new Date(end.getFullYear(), end.getMonth(), 0);
+                            days += prevMonth.getDate();
+                        }
                         if (months < 0) {
                             years -= 1;
                             months += 12;
                         }
                         const newYears = years.toString();
                         const newMonths = months.toString();
-                        if (newYears !== formData.warrantyYears || newMonths !== formData.warrantyMonths) {
-                            setFormData(prev => ({ ...prev, warrantyYears: newYears, warrantyMonths: newMonths }));
+                        const newDays = days.toString();
+                        if (newYears !== formData.warrantyYears || newMonths !== formData.warrantyMonths || newDays !== formData.warrantyDays) {
+                            setFormData(prev => ({ ...prev, warrantyYears: newYears, warrantyMonths: newMonths, warrantyDays: newDays }));
                         }
                     }
                 }
@@ -664,6 +716,7 @@ function doGet(e) {
                 }
             }, [assets, totalViewMode]);
 
+            // ปรับขนาดบาร์โค้ดให้ใหญ่ขึ้น
             const generateBarcode = () => {
                 if (!formData.code || !formData.name) return;
                 const canvas = document.createElement('canvas');
@@ -671,10 +724,10 @@ function doGet(e) {
                     JsBarcode(canvas, formData.code, {
                         format: "CODE128",
                         lineColor: "#000",
-                        width: 2,
-                        height: 50,
+                        width: 3,          // เพิ่มความกว้าง
+                        height: 80,         // เพิ่มความสูง
                         displayValue: true,
-                        fontSize: 14,
+                        fontSize: 16,        // เพิ่มขนาดตัวอักษร
                         text: `${formData.name} - ${formData.code}`
                     });
                     setBarcodeDataURL(canvas.toDataURL("image/png"));
@@ -699,6 +752,7 @@ function doGet(e) {
                         hasWarranty: item.hasWarranty === 'true' || item.hasWarranty === true,
                         warrantyYears: item.warrantyYears || '',
                         warrantyMonths: item.warrantyMonths || '',
+                        warrantyDays: item.warrantyDays || '',
                         warrantyStart: item.warrantyStart || '',
                         warrantyEnd: item.warrantyEnd || ''
                     });
@@ -712,6 +766,7 @@ function doGet(e) {
                         hasWarranty: false,
                         warrantyYears: '',
                         warrantyMonths: '',
+                        warrantyDays: '',
                         warrantyStart: '',
                         warrantyEnd: ''
                     });
@@ -889,7 +944,6 @@ function doGet(e) {
                     { facingMode: "environment" },
                     config,
                     (decodedText) => {
-                        // เมื่อสแกนได้
                         if (type === 'form') {
                             setFormData(prev => ({ ...prev, barcode: decodedText }));
                             stopScanner(type);
@@ -930,10 +984,10 @@ function doGet(e) {
                         JsBarcode(canvas, item.code, {
                             format: "CODE128",
                             lineColor: "#000",
-                            width: 2,
-                            height: 50,
+                            width: 3,
+                            height: 80,
                             displayValue: true,
-                            fontSize: 12,
+                            fontSize: 14,
                             text: `${item.name} - ${item.code}`
                         });
                         const dataURL = canvas.toDataURL("image/png");
@@ -952,11 +1006,14 @@ function doGet(e) {
                 URL.revokeObjectURL(link.href);
             };
 
+            // ฟังก์ชันค้นหา - ปรับปรุงให้ตรงกับรหัส
             const filteredAssets = useMemo(() => {
+                const term = searchTerm.toLowerCase().trim();
+                if (!term) return assets;
                 return assets.filter(a => 
-                    (a.name || "").toLowerCase().includes(searchTerm.toLowerCase()) || 
-                    (a.code || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-                    (a.location || "").toLowerCase().includes(searchTerm.toLowerCase())
+                    (a.code || '').toLowerCase().includes(term) || 
+                    (a.name || '').toLowerCase().includes(term) || 
+                    (a.location || '').toLowerCase().includes(term)
                 );
             }, [assets, searchTerm]);
 
@@ -1032,10 +1089,10 @@ function doGet(e) {
                         JsBarcode(canvas, item.code, {
                             format: "CODE128",
                             lineColor: "#000",
-                            width: 2,
-                            height: 50,
+                            width: 3,
+                            height: 80,
                             displayValue: true,
-                            fontSize: 12,
+                            fontSize: 14,
                             text: `${item.name} - ${item.code}`
                         });
                         const dataURL = canvas.toDataURL("image/png");
@@ -1077,6 +1134,7 @@ function doGet(e) {
             const visibleColumns = ALL_COLUMNS.filter(col => !hiddenColumns.includes(col.key) || col.always);
 
             return h('div', { className: "min-h-screen flex flex-col text-slate-800" },
+                // Header
                 h('div', { className: "bg-white shadow-sm z-30 sticky top-0" },
                     h('div', { className: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" },
                         h('div', { className: "flex justify-between h-16 items-center" },
@@ -1090,8 +1148,8 @@ function doGet(e) {
                                 )
                             ),
                             h('div', { className: "flex items-center gap-3" },
-                                !isOnline && h('span', { className: "offline-badge" }, "ออฟไลน์"),
-                                pendingCount > 0 && h('span', { className: "bg-amber-500 text-white px-2 py-1 rounded-full text-xs font-bold" }, `รอซิงก์ ${pendingCount}`),
+                                !isOnline && h('span', { className: "offline-badge hidden sm:inline" }, "ออฟไลน์"),
+                                pendingCount > 0 && h('span', { className: "bg-amber-500 text-white px-2 py-1 rounded-full text-xs font-bold hidden sm:inline" }, `รอซิงก์ ${pendingCount}`),
                                 h('div', { className: `hidden sm:flex px-3 py-1 rounded-full items-center gap-2 border ${syncStatus === 'success' ? 'bg-green-50 border-green-100 text-green-600' : 'bg-slate-50 border-slate-100 text-slate-500'}` },
                                     h('div', { className: `w-2 h-2 rounded-full ${syncStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : syncStatus === 'success' ? 'bg-green-500' : 'bg-slate-300'}` }),
                                     h('span', { className: "text-xs font-bold" }, syncStatus === 'success' ? 'Cloud Synced' : syncStatus === 'syncing' ? 'Syncing...' : 'Standby')
@@ -1099,8 +1157,8 @@ function doGet(e) {
                                 h('button', { 
                                     onClick: () => setShowSummary(!showSummary), 
                                     className: "flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-2 rounded-lg font-semibold text-sm transition-all" 
-                                }, h(Icon, { name: showSummary ? "eye" : "eye-off", className: "w-4 h-4" }), 
-                                  h('span', { className: "hidden sm:inline" }, showSummary ? 'ซ่อนสรุป' : 'แสดงสรุป')),
+                                }, h(Icon, { name: "bar-chart-2", className: "w-4 h-4" }), 
+                                  h('span', { className: "hidden sm:inline" }, showSummary ? 'ซ่อนสรุป' : 'ดูสรุป')),
                                 h('button', { 
                                     onClick: () => setIsSettingsOpen(true), 
                                     className: "flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-lg font-semibold text-sm transition-all" 
@@ -1111,7 +1169,9 @@ function doGet(e) {
                     )
                 ),
 
+                // Main Content
                 h('div', { className: "flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8" },
+                    // Summary Cards (ซ่อนเริ่มต้น)
                     showSummary && h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-8" },
                         h('div', { className: "bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-center" },
                             h('p', { className: "text-slate-400 text-xs font-bold uppercase tracking-wider mb-1" }, "ทรัพย์สินรวม"),
@@ -1149,6 +1209,7 @@ function doGet(e) {
                         )
                     ),
 
+                    // Toolbar
                     h('div', { className: "sticky-toolbar" },
                         h('div', { className: "flex flex-col sm:flex-row justify-between items-center gap-4" },
                             h('div', { className: "relative w-full sm:max-w-md flex items-center gap-2" },
@@ -1174,55 +1235,62 @@ function doGet(e) {
                                     title: "สแกนบาร์โค้ดเพื่อค้นหา"
                                 }, h(Icon, { name: "camera", className: "w-5 h-5" }))
                             ),
-                            h('div', { className: "flex gap-2 flex-wrap justify-center" },
+                            h('div', { className: "action-button-group" },
+                                // ปุ่มเลือกสำหรับมือถือ
+                                h('button', { 
+                                    onClick: () => setShowMobileCheckbox(!showMobileCheckbox),
+                                    className: "sm:hidden action-icon-button",
+                                    title: "เลือก"
+                                }, h(Icon, { name: showMobileCheckbox ? "check-square" : "square", className: "w-5 h-5" })),
                                 selectedIds.size > 0 && h('div', { className: "flex gap-2 mr-2" },
                                     h('button', { 
                                         onClick: downloadBarcodesZip, 
-                                        className: "bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
-                                    }, h(Icon, { name: "download", className: "w-4 h-4" }), 
-                                      h('span', { className: "hidden sm:inline" }, "ดาวน์โหลดบาร์โค้ด")),
+                                        className: "action-icon-button bg-green-100 hover:bg-green-200 text-green-700",
+                                        title: "ดาวน์โหลดบาร์โค้ด"
+                                    }, h(Icon, { name: "download", className: "w-5 h-5" })),
                                     h('button', { 
                                         onClick: () => {
                                             if (confirm(`ลบ ${selectedIds.size} รายการ?`)) {
                                                 alert('ฟังก์ชันลบยังไม่เชื่อมต่อกับ GAS (ต้องเพิ่ม action delete)');
                                             }
                                         }, 
-                                        className: "bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
-                                    }, h(Icon, { name: "trash-2", className: "w-4 h-4" }), 
-                                      h('span', { className: "hidden sm:inline" }, "ลบ")),
+                                        className: "action-icon-button bg-red-100 hover:bg-red-200 text-red-700",
+                                        title: "ลบ"
+                                    }, h(Icon, { name: "trash-2", className: "w-4 h-4" })),
                                     h('button', { 
                                         onClick: () => setShowPrintModal(true), 
-                                        className: "bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
-                                    }, h(Icon, { name: "printer", className: "w-4 h-4" }), 
-                                      h('span', { className: "hidden sm:inline" }, "พิมพ์บาร์โค้ด"))
+                                        className: "action-icon-button bg-indigo-100 hover:bg-indigo-200 text-indigo-700",
+                                        title: "พิมพ์บาร์โค้ด"
+                                    }, h(Icon, { name: "printer", className: "w-4 h-4" }))
                                 ),
                                 h('button', { 
                                     onClick: () => setShowSortModal(true), 
-                                    className: "bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
-                                }, h(Icon, { name: "arrow-up-down", className: "w-4 h-4" }), 
-                                  h('span', { className: "hidden sm:inline" }, "จัดเรียง")),
+                                    className: "action-icon-button",
+                                    title: "จัดเรียง"
+                                }, h(Icon, { name: "arrow-up-down", className: "w-5 h-5" })),
                                 h('button', { 
                                     onClick: () => setShowColumnModal(true), 
-                                    className: "bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2" 
-                                }, h(Icon, { name: "columns", className: "w-4 h-4" }), 
-                                  h('span', { className: "hidden sm:inline" }, "จัดการคอลัมน์")),
+                                    className: "action-icon-button",
+                                    title: "จัดการคอลัมน์"
+                                }, h(Icon, { name: "columns", className: "w-5 h-5" })),
                                 h('button', { 
                                     onClick: () => openForm(),
-                                    className: "bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-slate-200 transition-all"
-                                }, h(Icon, { name: "plus", className: "w-5 h-5" }), 
-                                  h('span', { className: "hidden sm:inline" }, "เพิ่มครุภัณฑ์"))
+                                    className: "action-icon-button bg-slate-900 text-white hover:bg-slate-800",
+                                    title: "เพิ่มครุภัณฑ์"
+                                }, h(Icon, { name: "plus", className: "w-5 h-5" }))
                             )
                         )
                     ),
 
-                    h('div', { className: "bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden mt-4" },
+                    // Table
+                    h('div', { className: `bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden mt-4 ${showMobileCheckbox ? 'mobile-checkbox-visible' : 'mobile-checkbox-hidden'}` },
                         h('div', { className: "overflow-x-auto" },
                             h('table', { className: "w-full text-left" },
                                 h('thead', { className: "bg-slate-50 border-b border-slate-100" },
                                     h('tr', null,
                                         visibleColumns.map(col => {
                                             if (col.key === 'checkbox') {
-                                                return h('th', { key: col.key, className: `px-6 py-4 w-10` },
+                                                return h('th', { key: col.key, className: `px-6 py-4 w-10 checkbox-col` },
                                                     h('input', { type: "checkbox", checked: selectedIds.size === filteredAssets.length && filteredAssets.length > 0, onChange: selectAll })
                                                 );
                                             }
@@ -1238,7 +1306,7 @@ function doGet(e) {
                                         sortedAssets.map(item => h('tr', { key: item.id || item.code, className: "hover:bg-slate-50/50 transition-colors group" },
                                             visibleColumns.map(col => {
                                                 if (col.key === 'checkbox') {
-                                                    return h('td', { key: col.key, className: "px-6 py-4" },
+                                                    return h('td', { key: col.key, className: "px-6 py-4 checkbox-col" },
                                                         h('input', { type: "checkbox", checked: selectedIds.has(item.id), onChange: () => toggleSelect(item.id) })
                                                     );
                                                 }
@@ -1290,6 +1358,7 @@ function doGet(e) {
                     h('button', { onClick: () => stopScanner('search'), className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
                 ),
 
+                // Sort Modal
                 showSortModal && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
                     h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
                         h('h3', { className: "text-lg font-bold mb-4" }, "จัดเรียงข้อมูล"),
@@ -1323,6 +1392,7 @@ function doGet(e) {
                     )
                 ),
 
+                // Column Modal
                 showColumnModal && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
                     h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
                         h('h3', { className: "text-lg font-bold mb-4" }, "เลือกคอลัมน์ที่ต้องการแสดง"),
@@ -1345,6 +1415,7 @@ function doGet(e) {
                     )
                 ),
 
+                // Form Slide-over
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isFormOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isFormOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsFormOpen(false) }),
                     h('div', { className: `absolute inset-y-0 right-0 max-w-full flex transition-transform duration-300 ${isFormOpen ? 'translate-x-0' : 'translate-x-full'}` },
@@ -1398,7 +1469,7 @@ function doGet(e) {
                                             onChange: e => setFormData({...formData, code: e.target.value}) 
                                         }),
                                         barcodeDataURL && h('div', { className: "mt-2 p-2 bg-white border rounded-lg flex justify-between items-center" },
-                                            h('img', { src: barcodeDataURL, className: "h-12 object-contain" }),
+                                            h('img', { src: barcodeDataURL, className: "h-16 object-contain" }),
                                             h('button', { onClick: downloadBarcode, className: "text-indigo-600 hover:text-indigo-800" }, h(Icon, { name: "download" }))
                                         )
                                     ),
@@ -1432,7 +1503,7 @@ function doGet(e) {
                                         }, statuses.sort((a,b) => a.order - b.order).map(s => h('option', { key: s.id, value: s.name }, s.name)))
                                     ),
 
-                                    h('div', { className: "grid grid-cols-1 md:grid-cols-3 gap-4" },
+                                    h('div', { className: "grid grid-cols-1 md:grid-cols-4 gap-4" },
                                         h('div', null,
                                             h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ราคา"),
                                             h('input', { type: "number", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.price, onChange: e => setFormData({...formData, price: e.target.value}) })
@@ -1449,7 +1520,7 @@ function doGet(e) {
                                     ),
 
                                     formData.hasWarranty && h('div', { className: "space-y-4 pl-6 border-l-2 border-indigo-200" },
-                                        h('div', { className: "grid grid-cols-2 gap-4" },
+                                        h('div', { className: "grid grid-cols-1 md:grid-cols-3 gap-4" },
                                             h('div', null,
                                                 h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ปี"),
                                                 h('input', { type: "number", min: "0", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyYears, onChange: e => {
@@ -1463,6 +1534,13 @@ function doGet(e) {
                                                     const val = e.target.value;
                                                     setFormData(prev => ({ ...prev, warrantyMonths: val, warrantyEnd: '' }));
                                                 } })
+                                            ),
+                                            h('div', null,
+                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วัน"),
+                                                h('input', { type: "number", min: "0", max: "30", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyDays, onChange: e => {
+                                                    const val = e.target.value;
+                                                    setFormData(prev => ({ ...prev, warrantyDays: val, warrantyEnd: '' }));
+                                                } })
                                             )
                                         ),
                                         h('div', { className: "grid grid-cols-2 gap-4" },
@@ -1474,7 +1552,7 @@ function doGet(e) {
                                                 h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันหมด"),
                                                 h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyEnd, onChange: e => {
                                                     const val = e.target.value;
-                                                    setFormData(prev => ({ ...prev, warrantyEnd: val, warrantyYears: '', warrantyMonths: '' }));
+                                                    setFormData(prev => ({ ...prev, warrantyEnd: val, warrantyYears: '', warrantyMonths: '', warrantyDays: '' }));
                                                 } })
                                             )
                                         )
@@ -1560,6 +1638,7 @@ function doGet(e) {
                     )
                 ),
 
+                // Settings
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isSettingsOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isSettingsOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsSettingsOpen(false) }),
                     h('div', { className: `absolute inset-y-0 left-0 max-w-full flex transition-transform duration-300 ${isSettingsOpen ? 'translate-x-0' : '-translate-x-full'}` },
@@ -1610,6 +1689,7 @@ function doGet(e) {
                     )
                 ),
 
+                // Instructions Modal
                 showInstructions && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
                     h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
                         h('h3', { className: "text-lg font-bold mb-4" }, "วิธีรับลิงก์ GAS"),
@@ -1625,6 +1705,7 @@ function doGet(e) {
                     )
                 ),
 
+                // Print Modal
                 showPrintModal && h('div', { className: "fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50" },
                     h('div', { className: "bg-white rounded-2xl max-w-md w-full p-6" },
                         h('h3', { className: "text-lg font-bold mb-4" }, "พิมพ์บาร์โค้ด"),
