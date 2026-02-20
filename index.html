@@ -38,6 +38,17 @@
             font-size: 0.75rem;
             font-weight: bold;
         }
+        .drag-handle {
+            cursor: grab;
+            user-select: none;
+        }
+        .drag-handle:active {
+            cursor: grabbing;
+        }
+        .dragging {
+            opacity: 0.5;
+            background: #e0f2fe;
+        }
     </style>
 </head>
 <body>
@@ -61,7 +72,6 @@
         // ----- Service Worker Registration and IndexedDB Setup -----
         const swRegistration = (() => {
             if ('serviceWorker' in navigator) {
-                // Create service worker from blob
                 const swCode = `
                     const CACHE_NAME = 'asset-cache-v1';
                     const urlsToCache = [
@@ -323,12 +333,12 @@ function doGet(e) {
   }
 }`;
 
-        // Default categories ตามรูป (M, S, IT, X)
+        // Default categories ตามที่กำหนด (M, S, IT, X)
         const DEFAULT_CATEGORIES = [
             { id: '1', name: 'สื่อคณิตศาสตร์', prefix: 'M', order: 0 },
             { id: '2', name: 'สื่อวิทยาศาสตร์', prefix: 'S', order: 1 },
             { id: '3', name: 'อุปกรณ์คอมพิวเตอร์-ไอที', prefix: 'IT', order: 2 },
-            { id: '4', name: 'เบ็ดเตล็ด', prefix: 'X', order: 3 }
+            { id: '4', name: 'ทั่วไป', prefix: 'X', order: 3 }
         ];
 
         const DEFAULT_LOCATIONS = [
@@ -338,10 +348,9 @@ function doGet(e) {
 
         const DEFAULT_STATUSES = [
             { id: '1', name: 'ใช้งานได้', order: 0 },
-            { id: '2', name: 'เสีย', order: 1 },
-            { id: '3', name: 'รอส่งซ่อม', order: 2 },
-            { id: '4', name: 'อยู่ระหว่างการซ่อม', order: 3 },
-            { id: '5', name: 'ยกเลิกการใช้งาน', order: 4 }
+            { id: '2', name: 'รอส่งซ่อม', order: 1 },
+            { id: '3', name: 'กำลังซ่อม', order: 2 },
+            { id: '4', name: 'เสีย', order: 3 }
         ];
 
         const SORT_COLUMNS = [
@@ -414,6 +423,9 @@ function doGet(e) {
             const [isOnline, setIsOnline] = useState(navigator.onLine);
             const [pendingCount, setPendingCount] = useState(0);
 
+            // Drag and drop states
+            const [draggedItemId, setDraggedItemId] = useState(null);
+
             // Online/Offline detection
             useEffect(() => {
                 const handleOnline = () => setIsOnline(true);
@@ -455,7 +467,6 @@ function doGet(e) {
                 }
                 await clearPending(pending.map(p => p.id));
                 setPendingCount(0);
-                // Refresh data after sync
                 setTimeout(() => fetchData(), 1500);
             };
 
@@ -470,14 +481,14 @@ function doGet(e) {
                 loadOfflineData();
             }, [isOnline]);
 
-            // Save assets to IndexedDB whenever they change (for offline)
+            // Save assets to IndexedDB whenever they change
             useEffect(() => {
                 if (assets.length > 0) {
                     saveAssetsToIndexedDB(assets);
                 }
             }, [assets]);
 
-            useEffect(() => { refreshIcons(); }, [assets, loading, isScanning, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount]);
+            useEffect(() => { refreshIcons(); }, [assets, loading, isScanning, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount, categories, locations, statuses]);
 
             useEffect(() => {
                 if (scriptUrl) {
@@ -559,7 +570,6 @@ function doGet(e) {
                     setTimeout(() => setSyncStatus('idle'), 3000);
                 } catch (e) { 
                     setSyncStatus('error');
-                    // If offline, try to load from IndexedDB
                     const localAssets = await loadAssetsFromIndexedDB();
                     if (localAssets.length) setAssets(localAssets);
                 } finally { setLoading(false); }
@@ -591,6 +601,13 @@ function doGet(e) {
                     });
                 } catch (e) {}
             };
+
+            // Auto-save config to sheet whenever it changes
+            useEffect(() => {
+                if (scriptUrl) {
+                    saveConfigToSheet();
+                }
+            }, [categories, locations, statuses]);
 
             const filteredAssetsForItems = useMemo(() => {
                 if (itemsViewMode === 'total') return assets;
@@ -695,7 +712,7 @@ function doGet(e) {
                 setIsFormOpen(true);
             };
 
-            // Optimistic update: close form, add to state immediately, then sync in background
+            // Optimistic update
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 if (!scriptUrl) { setIsSettingsOpen(true); return; }
@@ -704,50 +721,41 @@ function doGet(e) {
                 const tempId = action === 'create' ? `temp-${Date.now()}` : formData.id;
                 const newAsset = { ...formData, id: tempId };
                 
-                // Optimistic update
                 if (action === 'create') {
                     setAssets(prev => [newAsset, ...prev]);
                 } else {
                     setAssets(prev => prev.map(a => a.id === formData.id ? newAsset : a));
                 }
                 
-                // Close form immediately
                 setIsFormOpen(false);
                 
-                // Save to IndexedDB for offline
-                await saveAssetsToIndexedDB(assets); // but assets state not updated yet? we need to save the new one
-                // Actually we'll save after state update, but state update is async. Better to save in useEffect.
-                // We'll add a useEffect that saves assets to IndexedDB whenever assets changes.
+                await saveAssetsToIndexedDB(assets); // but assets not updated yet, we'll save later via useEffect
                 
-                // If offline, add to pending queue
                 if (!isOnline) {
                     await addPending(formData, action);
                     setPendingCount(prev => prev + 1);
                 } else {
-                    // Send to GAS in background
                     try {
                         await fetch(scriptUrl, {
                             method: 'POST', mode: 'no-cors',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ action, data: formData })
                         });
-                        // After sending, schedule a refresh after a delay
                         setTimeout(() => {
                             fetchData();
-                        }, 1500); // เพิ่มเวลาให้ GAS ประมวลผล
+                        }, 1500);
                     } catch (e) {
-                        // If failed, add to pending
                         await addPending(formData, action);
                         setPendingCount(prev => prev + 1);
                     }
                 }
             };
 
-            // Auto Code Generator with prefix from category (ใช้ prefix ตามรูป)
+            // Auto Code Generator with prefix from category
             useEffect(() => {
                 if (!formData.id && !formData.code && isFormOpen) {
                     const cat = categories.find(c => c.name === formData.category);
-                    const prefix = (cat && cat.prefix) ? cat.prefix : 'X'; // fallback X
+                    const prefix = (cat && cat.prefix) ? cat.prefix : 'X';
                     const count = assets.filter(a => a.category === formData.category).length + 1;
                     const newCode = `${prefix}-${String(count).padStart(6, '0')}`;
                     setFormData(prev => ({ ...prev, code: newCode }));
@@ -760,11 +768,12 @@ function doGet(e) {
             };
 
             const addConfigItem = (type, name) => {
+                const items = type === 'categories' ? categories : type === 'locations' ? locations : statuses;
                 const newItem = {
                     id: Date.now().toString(),
                     name,
                     ...(type === 'categories' ? { prefix: 'X' } : {}),
-                    order: type === 'categories' ? categories.length : type === 'locations' ? locations.length : statuses.length
+                    order: items.length
                 };
                 if (type === 'categories') {
                     setCategories([...categories, newItem]);
@@ -801,9 +810,13 @@ function doGet(e) {
                 const items = type === 'categories' ? [...categories] : type === 'locations' ? [...locations] : [...statuses];
                 const index = items.findIndex(i => i.id === id);
                 if (direction === 'up' && index > 0) {
-                    [items[index-1].order, items[index].order] = [items[index].order, items[index-1].order];
+                    const temp = items[index].order;
+                    items[index].order = items[index-1].order;
+                    items[index-1].order = temp;
                 } else if (direction === 'down' && index < items.length-1) {
-                    [items[index+1].order, items[index].order] = [items[index].order, items[index+1].order];
+                    const temp = items[index].order;
+                    items[index].order = items[index+1].order;
+                    items[index+1].order = temp;
                 }
                 items.sort((a,b) => a.order - b.order);
                 if (type === 'categories') {
@@ -815,11 +828,51 @@ function doGet(e) {
                 }
             };
 
-            useEffect(() => {
-                if (scriptUrl) {
-                    saveConfigToSheet();
+            // Drag and drop handlers
+            const handleDragStart = (e, itemId) => {
+                setDraggedItemId(itemId);
+                e.dataTransfer.setData('text/plain', itemId);
+                e.target.classList.add('dragging');
+            };
+
+            const handleDragOver = (e) => {
+                e.preventDefault();
+            };
+
+            const handleDrop = (e, targetId, type) => {
+                e.preventDefault();
+                const sourceId = e.dataTransfer.getData('text/plain');
+                if (sourceId === targetId) return;
+
+                const items = type === 'categories' ? [...categories] : type === 'locations' ? [...locations] : [...statuses];
+                const sourceIndex = items.findIndex(i => i.id === sourceId);
+                const targetIndex = items.findIndex(i => i.id === targetId);
+                if (sourceIndex === -1 || targetIndex === -1) return;
+
+                // Swap order values
+                const sourceOrder = items[sourceIndex].order;
+                const targetOrder = items[targetIndex].order;
+                items[sourceIndex].order = targetOrder;
+                items[targetIndex].order = sourceOrder;
+
+                items.sort((a,b) => a.order - b.order);
+
+                if (type === 'categories') {
+                    setCategories(items);
+                } else if (type === 'locations') {
+                    setLocations(items);
+                } else {
+                    setStatuses(items);
                 }
-            }, [categories, locations, statuses]);
+
+                setDraggedItemId(null);
+                e.target.classList.remove('dragging');
+            };
+
+            const handleDragEnd = (e) => {
+                setDraggedItemId(null);
+                e.target.classList.remove('dragging');
+            };
 
             const filteredAssets = useMemo(() => {
                 return assets.filter(a => 
@@ -1325,6 +1378,7 @@ function doGet(e) {
                     )
                 ),
 
+                // Config Editor with Drag and Drop
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isConfigOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isConfigOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsConfigOpen(false) }),
                     h('div', { className: `absolute inset-y-0 left-0 max-w-full flex transition-transform duration-300 ${isConfigOpen ? 'translate-x-0' : '-translate-x-full'}` },
@@ -1337,22 +1391,34 @@ function doGet(e) {
                             h('div', { className: "flex-1 overflow-y-auto p-4 custom-scroll" },
                                 (configType === 'categories' ? categories : configType === 'locations' ? locations : statuses)
                                     .sort((a,b) => a.order - b.order)
-                                    .map(item => h('div', { key: item.id, className: "flex items-center gap-2 mb-2 p-2 bg-slate-50 rounded-lg" },
-                                        h('button', { onClick: () => moveConfigItem(configType, item.id, 'up'), className: "text-slate-400 hover:text-indigo-600" }, h(Icon, { name: "chevron-up", className: "w-4 h-4" })),
-                                        h('button', { onClick: () => moveConfigItem(configType, item.id, 'down'), className: "text-slate-400 hover:text-indigo-600" }, h(Icon, { name: "chevron-down", className: "w-4 h-4" })),
-                                        configType === 'categories' && h('input', { 
-                                            className: "w-16 p-1 border rounded text-sm", 
-                                            placeholder: "Prefix",
-                                            value: item.prefix || 'X',
-                                            onChange: (e) => updateConfigItem(configType, item.id, 'prefix', e.target.value.toUpperCase())
-                                        }),
-                                        h('input', { 
-                                            className: "flex-1 p-2 border rounded-lg text-sm", 
-                                            value: item.name, 
-                                            onChange: (e) => updateConfigItem(configType, item.id, 'name', e.target.value) 
-                                        }),
-                                        h('button', { onClick: () => deleteConfigItem(configType, item.id), className: "text-red-400 hover:text-red-600" }, h(Icon, { name: "trash-2", className: "w-4 h-4" }))
-                                    )),
+                                    .map(item => {
+                                        const isDragging = draggedItemId === item.id;
+                                        return h('div', { 
+                                            key: item.id, 
+                                            className: `flex items-center gap-2 mb-2 p-2 rounded-lg transition-colors ${isDragging ? 'bg-blue-100 dragging' : 'bg-slate-50'}`,
+                                            draggable: true,
+                                            onDragStart: (e) => handleDragStart(e, item.id),
+                                            onDragOver: handleDragOver,
+                                            onDrop: (e) => handleDrop(e, item.id, configType),
+                                            onDragEnd: handleDragEnd
+                                        },
+                                            h('div', { className: "drag-handle text-slate-400 hover:text-indigo-600 cursor-grab" }, h(Icon, { name: "grip-vertical", className: "w-4 h-4" })),
+                                            h('button', { onClick: () => moveConfigItem(configType, item.id, 'up'), className: "text-slate-400 hover:text-indigo-600" }, h(Icon, { name: "chevron-up", className: "w-4 h-4" })),
+                                            h('button', { onClick: () => moveConfigItem(configType, item.id, 'down'), className: "text-slate-400 hover:text-indigo-600" }, h(Icon, { name: "chevron-down", className: "w-4 h-4" })),
+                                            configType === 'categories' && h('input', { 
+                                                className: "w-16 p-1 border rounded text-sm", 
+                                                placeholder: "Prefix",
+                                                value: item.prefix || 'X',
+                                                onChange: (e) => updateConfigItem(configType, item.id, 'prefix', e.target.value.toUpperCase())
+                                            }),
+                                            h('input', { 
+                                                className: "flex-1 p-2 border rounded-lg text-sm", 
+                                                value: item.name, 
+                                                onChange: (e) => updateConfigItem(configType, item.id, 'name', e.target.value) 
+                                            }),
+                                            h('button', { onClick: () => deleteConfigItem(configType, item.id), className: "text-red-400 hover:text-red-600" }, h(Icon, { name: "trash-2", className: "w-4 h-4" }))
+                                        );
+                                    }),
                                 h('div', { className: "mt-4 flex gap-2" },
                                     h('input', { id: "newItemName", className: "flex-1 p-2 border rounded-lg text-sm", placeholder: "เพิ่มรายการ..." }),
                                     h('button', { 
