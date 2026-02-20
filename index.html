@@ -95,6 +95,28 @@
             background-color: #818cf8;
             color: white;
         }
+        .location-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.75rem;
+            margin-top: 0.25rem;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 50;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        .location-dropdown-item {
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .location-dropdown-item:hover {
+            background-color: #f1f5f9;
+        }
     </style>
 </head>
 <body>
@@ -472,7 +494,9 @@ function doGet(e) {
             const [showInstructions, setShowInstructions] = useState(false);
             const [isOnline, setIsOnline] = useState(navigator.onLine);
             const [pendingCount, setPendingCount] = useState(0);
-            const [showCheckbox, setShowCheckbox] = useState(false); // ปิดเป็นค่าเริ่มต้น
+            const [showCheckbox, setShowCheckbox] = useState(false);
+            const [showLocationDropdown, setShowLocationDropdown] = useState(false);
+            const locationDropdownRef = useRef(null);
 
             // Drag and drop states
             const [draggedItemId, setDraggedItemId] = useState(null);
@@ -539,7 +563,7 @@ function doGet(e) {
                 }
             }, [assets]);
 
-            useEffect(() => { refreshIcons(); }, [assets, loading, isScanningForm, isScanningSearch, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount, categories, locations, statuses]);
+            useEffect(() => { refreshIcons(); }, [assets, loading, isScanningForm, isScanningSearch, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount, categories, locations, statuses, showLocationDropdown]);
 
             useEffect(() => {
                 if (scriptUrl) {
@@ -618,6 +642,17 @@ function doGet(e) {
                     }
                 }
             }, [formData.warrantyStart, formData.warrantyEnd, formData.hasWarranty]);
+
+            // Click outside to close location dropdown
+            useEffect(() => {
+                const handleClickOutside = (event) => {
+                    if (locationDropdownRef.current && !locationDropdownRef.current.contains(event.target)) {
+                        setShowLocationDropdown(false);
+                    }
+                };
+                document.addEventListener('mousedown', handleClickOutside);
+                return () => document.removeEventListener('mousedown', handleClickOutside);
+            }, []);
 
             const fetchData = async () => {
                 if (!scriptUrl) return;
@@ -760,8 +795,7 @@ function doGet(e) {
                 } else {
                     setFormData({ 
                         id: '', code: '', name: '', category: categories[0]?.name || 'สื่อคณิตศาสตร์', 
-                        price: '', location: locations[0]?.name || 'ห้องเก็บของ', 
-                        date: new Date().toISOString().split('T')[0], 
+                        price: '', location: '', date: new Date().toISOString().split('T')[0], 
                         status: statuses[0]?.name || 'ใช้งานได้',
                         barcode: '',
                         hasWarranty: false,
@@ -1018,7 +1052,7 @@ function doGet(e) {
                 URL.revokeObjectURL(link.href);
             };
 
-            // ฟังก์ชันค้นหา - ปรับปรุงให้รองรับภาษาไทย
+            // ฟังก์ชันค้นหา - แก้ไขให้ทำงานได้ (ใช้ toLowerCase และ includes)
             const filteredAssets = useMemo(() => {
                 const term = searchTerm.toLowerCase().trim();
                 if (!term) return assets;
@@ -1026,7 +1060,6 @@ function doGet(e) {
                     const code = (a.code || '').toLowerCase();
                     const name = (a.name || '').toLowerCase();
                     const location = (a.location || '').toLowerCase();
-                    // ใช้ includes ซึ่งรองรับภาษาไทยอยู่แล้ว
                     return code.includes(term) || name.includes(term) || location.includes(term);
                 });
             }, [assets, searchTerm]);
@@ -1255,7 +1288,6 @@ function doGet(e) {
                                 }, h(Icon, { name: "scan-barcode", className: "w-5 h-5" }))
                             ),
                             h('div', { className: "action-button-group" },
-                                // ปุ่มแสดง/ซ่อน checkbox
                                 h('button', { 
                                     onClick: () => setShowCheckbox(!showCheckbox),
                                     className: `action-icon-button ${showCheckbox ? 'active' : ''}`,
@@ -1445,6 +1477,13 @@ function doGet(e) {
                             ),
                             h('div', { className: "flex-1 overflow-y-auto p-6 custom-scroll bg-slate-50/50" },
                                 h('form', { onSubmit: handleSubmit, className: "space-y-6" },
+                                    // ชื่อรายการ มาก่อน
+                                    h('div', null,
+                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ชื่อรายการ"),
+                                        h('input', { required: true, className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.name, onChange: e => setFormData({...formData, name: e.target.value}) })
+                                    ),
+
+                                    // บาร์โค้ดสินค้า
                                     h('div', null,
                                         h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "บาร์โค้ดสินค้า"),
                                         h('div', { className: "flex gap-2" },
@@ -1493,21 +1532,37 @@ function doGet(e) {
                                         )
                                     ),
 
-                                    h('div', null,
-                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ชื่อรายการ"),
-                                        h('input', { required: true, className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.name, onChange: e => setFormData({...formData, name: e.target.value}) })
-                                    ),
-
-                                    h('div', null,
+                                    // สถานที่แบบ input + dropdown
+                                    h('div', { className: "relative", ref: locationDropdownRef },
                                         h('div', { className: "flex justify-between items-center mb-1.5" },
                                             h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานที่เก็บ"),
                                             h('button', { type: "button", onClick: () => openConfigEditor('locations'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
                                         ),
-                                        h('select', { 
-                                            className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500",
-                                            value: formData.location,
-                                            onChange: e => setFormData({...formData, location: e.target.value}) 
-                                        }, locations.sort((a,b) => a.order - b.order).map(l => h('option', { key: l.id, value: l.name }, l.name)))
+                                        h('div', { className: "flex gap-2" },
+                                            h('input', { 
+                                                className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", 
+                                                value: formData.location, 
+                                                onChange: e => setFormData({...formData, location: e.target.value}),
+                                                placeholder: "พิมพ์หรือเลือกสถานที่"
+                                            }),
+                                            h('button', { 
+                                                type: "button", 
+                                                onClick: () => setShowLocationDropdown(!showLocationDropdown),
+                                                className: "p-3 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all"
+                                            }, h(Icon, { name: "chevrons-down", className: "w-5 h-5" }))
+                                        ),
+                                        showLocationDropdown && h('div', { className: "location-dropdown" },
+                                            locations.sort((a,b) => a.order - b.order).map(loc => 
+                                                h('div', { 
+                                                    key: loc.id, 
+                                                    className: "location-dropdown-item",
+                                                    onClick: () => {
+                                                        setFormData(prev => ({ ...prev, location: loc.name }));
+                                                        setShowLocationDropdown(false);
+                                                    }
+                                                }, loc.name)
+                                            )
+                                        )
                                     ),
 
                                     h('div', null,
@@ -1522,7 +1577,8 @@ function doGet(e) {
                                         }, statuses.sort((a,b) => a.order - b.order).map(s => h('option', { key: s.id, value: s.name }, s.name)))
                                     ),
 
-                                    h('div', { className: "grid grid-cols-1 md:grid-cols-4 gap-4" },
+                                    // ราคาและวันที่ คู่กัน ซ้าย-ขวา เต็มพื้นที่
+                                    h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
                                         h('div', null,
                                             h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ราคา"),
                                             h('input', { type: "number", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.price, onChange: e => setFormData({...formData, price: e.target.value}) })
