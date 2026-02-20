@@ -143,6 +143,20 @@
         .toggle-switch.active .toggle-knob {
             transform: translateX(1.5rem);
         }
+        .slide-up-enter {
+            transform: translateY(100%);
+        }
+        .slide-up-enter-active {
+            transform: translateY(0);
+            transition: transform 0.3s ease-out;
+        }
+        .slide-up-exit {
+            transform: translateY(0);
+        }
+        .slide-up-exit-active {
+            transform: translateY(100%);
+            transition: transform 0.3s ease-in;
+        }
     </style>
 </head>
 <body>
@@ -287,7 +301,7 @@
             return tx.complete;
         };
 
-        // GAS CODE TEMPLATE ปรับปรุงให้ action delete บันทึกข้อมูลลง Backup_Assets ด้วย
+        // GAS CODE TEMPLATE with backup for delete and readBackupConfig
         const GAS_CODE_TEMPLATE = `function doPost(e) {
   var prop = ContentService.MimeType.JSON;
   try {
@@ -331,11 +345,11 @@
         if (rowIndex > 1) {
           assetSheet.getRange(rowIndex, 1, 1, headers.length).setValues([rowData]);
         } else {
-          assetSheet.appendRow(rowData); // fallback
+          assetSheet.appendRow(rowData);
         }
       }
       
-      // บันทึก Backup
+      // Backup
       var backupAssetSheet = ss.getSheetByName('Backup_Assets');
       if (!backupAssetSheet) {
         backupAssetSheet = ss.insertSheet('Backup_Assets');
@@ -373,20 +387,19 @@
       var assetSheet = ss.getSheetByName('Asset');
       if (!assetSheet) return ContentService.createTextOutput(JSON.stringify({status: 'error', message: 'Asset sheet not found'})).setMimeType(prop);
       
-      // อ่านข้อมูลแถวที่จะลบก่อน
       var ids = assetSheet.getRange(2, 1, assetSheet.getLastRow() - 1, 1).getValues().flat();
       var rowIndex = ids.indexOf(data.id) + 2;
       if (rowIndex > 1) {
-        // อ่านข้อมูลทั้งแถว
+        // Get the row data before deleting
         var headers = assetSheet.getRange(1, 1, 1, assetSheet.getLastColumn()).getValues()[0];
         var rowData = assetSheet.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
-        var assetData = {};
-        headers.forEach(function(h, i) { assetData[h] = rowData[i]; });
+        var item = {};
+        headers.forEach(function(h, i) { item[h] = rowData[i]; });
         
-        // ลบแถว
+        // Delete the row
         assetSheet.deleteRow(rowIndex);
         
-        // บันทึก Backup การลบ
+        // Backup the deletion
         var backupAssetSheet = ss.getSheetByName('Backup_Assets');
         if (!backupAssetSheet) {
           backupAssetSheet = ss.insertSheet('Backup_Assets');
@@ -398,21 +411,21 @@
         var backupRow = [
           new Date(),
           'delete',
-          assetData.id || '',
-          assetData.code || '',
-          assetData.name || '',
-          assetData.category || '',
-          assetData.price || '',
-          assetData.location || '',
-          assetData.date || '',
-          assetData.status || '',
-          assetData.barcode || '',
-          assetData.hasWarranty || '',
-          assetData.warrantyYears || '',
-          assetData.warrantyMonths || '',
-          assetData.warrantyDays || '',
-          assetData.warrantyStart || '',
-          assetData.warrantyEnd || ''
+          item.id || '',
+          item.code || '',
+          item.name || '',
+          item.category || '',
+          item.price || '',
+          item.location || '',
+          item.date || '',
+          item.status || '',
+          item.barcode || '',
+          item.hasWarranty || '',
+          item.warrantyYears || '',
+          item.warrantyMonths || '',
+          item.warrantyDays || '',
+          item.warrantyStart || '',
+          item.warrantyEnd || ''
         ];
         backupAssetSheet.appendRow(backupRow);
       }
@@ -428,23 +441,19 @@
         dropdownSheet.appendRow(['type', 'id', 'name', 'prefix', 'order']);
       }
       
-      // ลบข้อมูลเก่าทิ้ง (เก็บหัวตารางไว้)
       var lastRow = dropdownSheet.getLastRow();
       if (lastRow > 1) dropdownSheet.deleteRows(2, lastRow - 1);
       
-      // บันทึก categories
       var categories = data.categories || [];
       categories.forEach(function(cat) {
         dropdownSheet.appendRow(['category', cat.id || '', cat.name || '', cat.prefix || '', cat.order || '']);
       });
       
-      // บันทึก locations
       var locations = data.locations || [];
       locations.forEach(function(loc) {
         dropdownSheet.appendRow(['location', loc.id || '', loc.name || '', '', loc.order || '']);
       });
       
-      // บันทึก statuses
       var statuses = data.statuses || [];
       statuses.forEach(function(status) {
         dropdownSheet.appendRow(['status', status.id || '', status.name || '', '', status.order || '']);
@@ -514,6 +523,87 @@ function doGet(e) {
       statuses: statuses
     };
     return ContentService.createTextOutput(JSON.stringify(config)).setMimeType(prop);
+  }
+  
+  if (action === 'readBackupConfig') {
+    // อ่านข้อมูลจาก Backup sheets หาค่าล่าสุด (ตาม timestamp) ของแต่ละประเภท
+    var result = { categories: [], locations: [], statuses: [] };
+    
+    var backupCatSheet = ss.getSheetByName('Backup_Categories');
+    if (backupCatSheet) {
+      var catData = backupCatSheet.getDataRange().getValues();
+      if (catData.length > 1) {
+        var catHeaders = catData[0];
+        var catRows = catData.slice(1);
+        // เรียงตาม timestamp (สมมติคอลัมน์แรกเป็น timestamp) เพื่อหาค่าล่าสุด
+        var catMap = new Map();
+        catRows.forEach(function(row) {
+          var type = row[1]; // action
+          if (type !== 'saveConfig') return;
+          var id = row[2];
+          var name = row[3];
+          var prefix = row[4];
+          var order = row[5];
+          var timestamp = row[0];
+          if (!catMap.has(id) || new Date(timestamp) > new Date(catMap.get(id).timestamp)) {
+            catMap.set(id, { id: id, name: name, prefix: prefix, order: order, timestamp: timestamp });
+          }
+        });
+        result.categories = Array.from(catMap.values()).map(function(item) {
+          return { id: item.id, name: item.name, prefix: item.prefix, order: item.order };
+        });
+      }
+    }
+    
+    var backupLocSheet = ss.getSheetByName('Backup_Locations');
+    if (backupLocSheet) {
+      var locData = backupLocSheet.getDataRange().getValues();
+      if (locData.length > 1) {
+        var locHeaders = locData[0];
+        var locRows = locData.slice(1);
+        var locMap = new Map();
+        locRows.forEach(function(row) {
+          var type = row[1];
+          if (type !== 'saveConfig') return;
+          var id = row[2];
+          var name = row[3];
+          var order = row[5];
+          var timestamp = row[0];
+          if (!locMap.has(id) || new Date(timestamp) > new Date(locMap.get(id).timestamp)) {
+            locMap.set(id, { id: id, name: name, order: order, timestamp: timestamp });
+          }
+        });
+        result.locations = Array.from(locMap.values()).map(function(item) {
+          return { id: item.id, name: item.name, order: item.order };
+        });
+      }
+    }
+    
+    var backupStatusSheet = ss.getSheetByName('Backup_Statuses');
+    if (backupStatusSheet) {
+      var statusData = backupStatusSheet.getDataRange().getValues();
+      if (statusData.length > 1) {
+        var statusHeaders = statusData[0];
+        var statusRows = statusData.slice(1);
+        var statusMap = new Map();
+        statusRows.forEach(function(row) {
+          var type = row[1];
+          if (type !== 'saveConfig') return;
+          var id = row[2];
+          var name = row[3];
+          var order = row[5];
+          var timestamp = row[0];
+          if (!statusMap.has(id) || new Date(timestamp) > new Date(statusMap.get(id).timestamp)) {
+            statusMap.set(id, { id: id, name: name, order: order, timestamp: timestamp });
+          }
+        });
+        result.statuses = Array.from(statusMap.values()).map(function(item) {
+          return { id: item.id, name: item.name, order: item.order };
+        });
+      }
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(prop);
   }
 }`;
 
@@ -613,19 +703,9 @@ function doGet(e) {
             const [showCheckbox, setShowCheckbox] = useState(false);
             const [showLocationDropdown, setShowLocationDropdown] = useState(false);
             const locationDropdownRef = useRef(null);
-            // State สำหรับ toggle บาร์โค้ด
-            const [showBarcodeField, setShowBarcodeField] = useState(false);
+            const [showBarcodeInput, setShowBarcodeInput] = useState(false);
 
             const [draggedItemId, setDraggedItemId] = useState(null);
-
-            // เมื่อเปิดฟอร์มแก้ไข ถ้ามีค่า barcode ให้เปิด toggle
-            useEffect(() => {
-                if (isFormOpen && formData.barcode) {
-                    setShowBarcodeField(true);
-                } else {
-                    setShowBarcodeField(false);
-                }
-            }, [isFormOpen, formData.barcode]);
 
             useEffect(() => {
                 const handleOnline = () => setIsOnline(true);
@@ -684,7 +764,7 @@ function doGet(e) {
                 }
             }, [assets]);
 
-            useEffect(() => { refreshIcons(); }, [assets, loading, isScanningForm, isScanningSearch, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount, categories, locations, statuses, showLocationDropdown, showBarcodeField]);
+            useEffect(() => { refreshIcons(); }, [assets, loading, isScanningForm, isScanningSearch, isFormOpen, isSettingsOpen, syncStatus, totalViewMode, itemsViewMode, showSummary, isConfigOpen, selectedIds, showPrintModal, sortRules, hiddenColumns, showColumnModal, isOnline, pendingCount, categories, locations, statuses, showLocationDropdown, showBarcodeInput]);
 
             useEffect(() => {
                 if (scriptUrl) {
@@ -710,12 +790,12 @@ function doGet(e) {
             }, [statuses]);
 
             useEffect(() => {
-                if (formData.code && formData.name && showBarcodeField) {
+                if (formData.code && formData.name) {
                     generateBarcode();
                 } else {
                     setBarcodeDataURL('');
                 }
-            }, [formData.code, formData.name, showBarcodeField]);
+            }, [formData.code, formData.name]);
 
             useEffect(() => {
                 if (!formData.hasWarranty) return;
@@ -817,6 +897,21 @@ function doGet(e) {
                 } catch (e) {}
             };
 
+            // ฟังก์ชันนำเข้าข้อมูลจาก Backup
+            const importFromBackup = async () => {
+                if (!scriptUrl) { setIsSettingsOpen(true); return; }
+                try {
+                    const response = await fetch(`${scriptUrl}?action=readBackupConfig`);
+                    const config = await response.json();
+                    if (config.categories) setCategories(config.categories);
+                    if (config.locations) setLocations(config.locations);
+                    if (config.statuses) setStatuses(config.statuses);
+                    alert('นำเข้าข้อมูลสำเร็จ');
+                } catch (e) {
+                    alert('นำเข้าข้อมูลล้มเหลว');
+                }
+            };
+
             useEffect(() => {
                 if (scriptUrl) {
                     saveConfigToSheet();
@@ -910,6 +1005,7 @@ function doGet(e) {
                         warrantyStart: item.warrantyStart || '',
                         warrantyEnd: item.warrantyEnd || ''
                     });
+                    setShowBarcodeInput(!!(item.barcode));
                 } else {
                     setFormData({ 
                         id: '', code: '', name: '', category: categories[0]?.name || 'สื่อคณิตศาสตร์', 
@@ -923,6 +1019,7 @@ function doGet(e) {
                         warrantyStart: '',
                         warrantyEnd: ''
                     });
+                    setShowBarcodeInput(false);
                 }
                 setIsFormOpen(true);
             };
@@ -953,9 +1050,7 @@ function doGet(e) {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ action, data: formData })
                         });
-                        setTimeout(() => {
-                            fetchData();
-                        }, 1500);
+                        // ไม่ต้อง fetchData ทันที เพราะ optimistic update
                     } catch (e) {
                         await addPending(formData, action);
                         setPendingCount(prev => prev + 1);
@@ -967,6 +1062,7 @@ function doGet(e) {
                 if (!confirm('คุณแน่ใจหรือไม่ที่จะลบรายการนี้?')) return;
                 if (!scriptUrl) { setIsSettingsOpen(true); return; }
 
+                // Optimistic delete
                 setAssets(prev => prev.filter(a => a.id !== id));
                 setIsFormOpen(false);
 
@@ -980,7 +1076,7 @@ function doGet(e) {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ action: 'delete', data: { id } })
                         });
-                        // ไม่เรียก fetchData เพื่อป้องกันการโหลดซ้ำ
+                        // ไม่ต้อง fetchData
                     } catch (e) {
                         await addPending({ id }, 'delete');
                         setPendingCount(prev => prev + 1);
@@ -1339,7 +1435,7 @@ function doGet(e) {
             const visibleColumns = ALL_COLUMNS.filter(col => !hiddenColumns.includes(col.key) || col.always);
 
             return h('div', { className: "min-h-screen flex flex-col text-slate-800" },
-                // Header (คงเดิม)
+                // Header
                 h('div', { className: "bg-white shadow-sm z-30 sticky top-0" },
                     h('div', { className: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" },
                         h('div', { className: "flex justify-between h-16 items-center" },
@@ -1379,7 +1475,7 @@ function doGet(e) {
                     )
                 ),
 
-                // Main Content (คงเดิม)
+                // Main Content
                 h('div', { className: "flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8" },
                     showSummary && h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-8" },
                         h('div', { className: "bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-center" },
@@ -1630,87 +1726,81 @@ function doGet(e) {
                     )
                 ),
 
-                // Form Slide-over ปรับปรุง: ใช้ max-w-6xl บนจอใหญ่ และจัด grid 2 คอลัมน์
+                // Form Slide-over with full screen slide-up
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isFormOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isFormOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsFormOpen(false) }),
-                    h('div', { className: `absolute inset-y-0 right-0 max-w-full flex transition-transform duration-300 ${isFormOpen ? 'translate-x-0' : 'translate-x-full'}` },
-                        h('div', { className: "w-screen max-w-6xl bg-white shadow-2xl flex flex-col h-full" }, // ขยายเป็นเต็มจอ
+                    h('div', { className: `absolute inset-0 flex items-end justify-center transition-transform duration-300 ${isFormOpen ? 'translate-y-0' : 'translate-y-full'}` },
+                        h('div', { className: "w-full max-w-4xl bg-white shadow-2xl flex flex-col h-[90vh] rounded-t-2xl overflow-hidden" },
                             h('div', { className: "px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-white" },
                                 h('h2', { className: "text-lg font-black text-slate-800" }, formData.id ? "แก้ไขข้อมูล" : "เพิ่มครุภัณฑ์ใหม่"),
                                 h('button', { onClick: () => setIsFormOpen(false), className: "p-2 hover:bg-slate-50 rounded-full transition-colors" }, h(Icon, { name: "x", className: "w-5 h-5 text-slate-400" }))
                             ),
                             h('div', { className: "flex-1 overflow-y-auto p-6 custom-scroll bg-slate-50/50" },
                                 h('form', { onSubmit: handleSubmit, className: "space-y-6" },
-                                    // ใช้ grid 2 คอลัมน์บนจอใหญ่
-                                    h('div', { className: "grid grid-cols-1 lg:grid-cols-2 gap-6" },
-                                        // คอลัมน์ซ้าย
-                                        h('div', { className: "space-y-6" },
-                                            // ชื่อรายการ
-                                            h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ชื่อรายการ"),
-                                                h('input', { required: true, className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.name, onChange: e => setFormData({...formData, name: e.target.value}) })
-                                            ),
-                                            // หมวดหมู่
-                                            h('div', null,
-                                                h('div', { className: "flex justify-between items-center mb-1.5" },
-                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "หมวดหมู่"),
-                                                    h('button', { type: "button", onClick: () => openConfigEditor('categories'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
-                                                ),
-                                                h('select', { 
-                                                    className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500",
-                                                    value: formData.category,
-                                                    onChange: e => setFormData({...formData, category: e.target.value, id: '', code: ''}) 
-                                                }, categories.sort((a,b) => a.order - b.order).map(c => h('option', { key: c.id, value: c.name }, c.name)))
-                                            ),
-                                            // สถานที่เก็บ
-                                            h('div', { className: "relative", ref: locationDropdownRef },
-                                                h('div', { className: "flex justify-between items-center mb-1.5" },
-                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานที่เก็บ"),
-                                                    h('button', { type: "button", onClick: () => openConfigEditor('locations'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
-                                                ),
-                                                h('div', { className: "flex gap-2" },
-                                                    h('input', { 
-                                                        className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", 
-                                                        value: formData.location, 
-                                                        onChange: e => setFormData({...formData, location: e.target.value}),
-                                                        placeholder: "พิมพ์หรือเลือกสถานที่"
-                                                    }),
-                                                    h('button', { 
-                                                        type: "button", 
-                                                        onClick: () => setShowLocationDropdown(!showLocationDropdown),
-                                                        className: "p-3 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all"
-                                                    }, h(Icon, { name: "chevrons-down", className: "w-5 h-5" }))
-                                                ),
-                                                showLocationDropdown && h('div', { className: "location-dropdown" },
-                                                    locations.sort((a,b) => a.order - b.order).map(loc => 
-                                                        h('div', { 
-                                                            key: loc.id, 
-                                                            className: "location-dropdown-item",
-                                                            onClick: () => {
-                                                                setFormData(prev => ({ ...prev, location: loc.name }));
-                                                                setShowLocationDropdown(false);
-                                                            }
-                                                        }, loc.name)
-                                                    )
-                                                )
-                                            ),
-                                            // สถานะ
-                                            h('div', null,
-                                                h('div', { className: "flex justify-between items-center mb-1.5" },
-                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานะ"),
-                                                    h('button', { type: "button", onClick: () => openConfigEditor('statuses'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
-                                                ),
-                                                h('select', { 
-                                                    className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500",
-                                                    value: formData.status,
-                                                    onChange: e => setFormData({...formData, status: e.target.value}) 
-                                                }, statuses.sort((a,b) => a.order - b.order).map(s => h('option', { key: s.id, value: s.name }, s.name)))
-                                            ),
+                                    h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
+                                        h('div', { className: "md:col-span-2" },
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ชื่อรายการ"),
+                                            h('input', { required: true, className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.name, onChange: e => setFormData({...formData, name: e.target.value}) })
                                         ),
-                                        // คอลัมน์ขวา
-                                        h('div', { className: "space-y-6" },
-                                            // รหัสทรัพย์สิน + toggle บาร์โค้ด
-                                            h('div', { className: "flex items-end gap-2" },
+
+                                        h('div', null,
+                                            h('div', { className: "flex justify-between items-center mb-1.5" },
+                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "หมวดหมู่"),
+                                                h('button', { type: "button", onClick: () => openConfigEditor('categories'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
+                                            ),
+                                            h('select', { 
+                                                className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500",
+                                                value: formData.category,
+                                                onChange: e => setFormData({...formData, category: e.target.value, id: '', code: ''}) 
+                                            }, categories.sort((a,b) => a.order - b.order).map(c => h('option', { key: c.id, value: c.name }, c.name)))
+                                        ),
+
+                                        h('div', { className: "relative", ref: locationDropdownRef },
+                                            h('div', { className: "flex justify-between items-center mb-1.5" },
+                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานที่เก็บ"),
+                                                h('button', { type: "button", onClick: () => openConfigEditor('locations'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
+                                            ),
+                                            h('div', { className: "flex gap-2" },
+                                                h('input', { 
+                                                    className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", 
+                                                    value: formData.location, 
+                                                    onChange: e => setFormData({...formData, location: e.target.value}),
+                                                    placeholder: "พิมพ์หรือเลือกสถานที่"
+                                                }),
+                                                h('button', { 
+                                                    type: "button", 
+                                                    onClick: () => setShowLocationDropdown(!showLocationDropdown),
+                                                    className: "p-3 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-all"
+                                                }, h(Icon, { name: "chevrons-down", className: "w-5 h-5" }))
+                                            ),
+                                            showLocationDropdown && h('div', { className: "location-dropdown" },
+                                                locations.sort((a,b) => a.order - b.order).map(loc => 
+                                                    h('div', { 
+                                                        key: loc.id, 
+                                                        className: "location-dropdown-item",
+                                                        onClick: () => {
+                                                            setFormData(prev => ({ ...prev, location: loc.name }));
+                                                            setShowLocationDropdown(false);
+                                                        }
+                                                    }, loc.name)
+                                                )
+                                            )
+                                        ),
+
+                                        h('div', null,
+                                            h('div', { className: "flex justify-between items-center mb-1.5" },
+                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานะ"),
+                                                h('button', { type: "button", onClick: () => openConfigEditor('statuses'), className: "text-indigo-500 hover:text-indigo-700" }, h(Icon, { name: "pencil", className: "w-4 h-4" }))
+                                            ),
+                                            h('select', { 
+                                                className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500",
+                                                value: formData.status,
+                                                onChange: e => setFormData({...formData, status: e.target.value}) 
+                                            }, statuses.sort((a,b) => a.order - b.order).map(s => h('option', { key: s.id, value: s.name }, s.name)))
+                                        ),
+
+                                        h('div', { className: "md:col-span-2" },
+                                            h('div', { className: "flex items-center gap-2" },
                                                 h('div', { className: "flex-1" },
                                                     h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "รหัสทรัพย์สิน"),
                                                     h('input', { 
@@ -1719,92 +1809,91 @@ function doGet(e) {
                                                         onChange: e => setFormData({...formData, code: e.target.value}) 
                                                     })
                                                 ),
-                                                h('div', { className: "flex items-center gap-2 pb-1" },
-                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "บาร์โค้ด"),
-                                                    h(Toggle, { checked: showBarcodeField, onChange: setShowBarcodeField })
+                                                h('div', { className: "flex items-center gap-2 mt-6" },
+                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase mr-2" }, "บาร์โค้ด"),
+                                                    h(Toggle, { checked: showBarcodeInput, onChange: setShowBarcodeInput })
                                                 )
                                             ),
-                                            // แสดงช่องบาร์โค้ดเมื่อเปิด toggle
-                                            showBarcodeField && h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "บาร์โค้ดสินค้า"),
-                                                h('div', { className: "flex gap-2" },
-                                                    h('input', { 
-                                                        className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", 
-                                                        value: formData.barcode, 
-                                                        onChange: e => setFormData({...formData, barcode: e.target.value}) 
-                                                    }),
-                                                    h('button', { 
-                                                        type: "button", 
-                                                        onClick: () => {
-                                                            if (isScanningForm) {
-                                                                stopScanner('form');
-                                                            } else {
-                                                                setIsScanningForm(true);
-                                                                setTimeout(() => startScanner('form', scannerFormRef), 100);
-                                                            }
-                                                        }, 
-                                                        className: `px-4 rounded-xl ${isScanningForm ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'} hover:bg-slate-200 flex items-center justify-center`
-                                                    }, h(Icon, { name: "scan-barcode", className: "w-5 h-5" }))
-                                                ),
-                                                barcodeDataURL && h('div', { className: "mt-2 p-2 bg-white border rounded-lg flex justify-between items-center" },
-                                                    h('img', { src: barcodeDataURL, className: "h-16 object-contain" }),
-                                                    h('button', { onClick: downloadBarcode, className: "text-indigo-600 hover:text-indigo-800" }, h(Icon, { name: "download" }))
-                                                )
-                                            ),
-                                            // ราคาและวันที่
-                                            h('div', { className: "grid grid-cols-1 sm:grid-cols-2 gap-4" },
-                                                h('div', null,
-                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ราคา"),
-                                                    h('input', { type: "number", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.price, onChange: e => setFormData({...formData, price: e.target.value}) })
-                                                ),
-                                                h('div', null,
-                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันที่"),
-                                                    h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.date, onChange: e => setFormData({...formData, date: e.target.value}) })
-                                                )
-                                            ),
-                                            // มีประกัน
-                                            h('div', { className: "flex items-center gap-3" },
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "มีประกัน"),
-                                                h(Toggle, { checked: formData.hasWarranty, onChange: (val) => setFormData({...formData, hasWarranty: val}) })
-                                            ),
-                                        )
-                                    ),
-                                    // ส่วนประกัน (อยู่ด้านล่างเต็มความกว้าง)
-                                    formData.hasWarranty && h('div', { className: "space-y-4 pl-6 border-l-2 border-indigo-200 mt-4" },
-                                        h('div', { className: "grid grid-cols-1 md:grid-cols-3 gap-4" },
-                                            h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ปี"),
-                                                h('input', { type: "number", min: "0", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyYears, onChange: e => {
-                                                    const val = e.target.value;
-                                                    setFormData(prev => ({ ...prev, warrantyYears: val, warrantyEnd: '' }));
-                                                } })
-                                            ),
-                                            h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "เดือน"),
-                                                h('input', { type: "number", min: "0", max: "11", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyMonths, onChange: e => {
-                                                    const val = e.target.value;
-                                                    setFormData(prev => ({ ...prev, warrantyMonths: val, warrantyEnd: '' }));
-                                                } })
-                                            ),
-                                            h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วัน"),
-                                                h('input', { type: "number", min: "0", max: "30", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyDays, onChange: e => {
-                                                    const val = e.target.value;
-                                                    setFormData(prev => ({ ...prev, warrantyDays: val, warrantyEnd: '' }));
-                                                } })
+                                            barcodeDataURL && h('div', { className: "mt-2 p-2 bg-white border rounded-lg flex justify-between items-center" },
+                                                h('img', { src: barcodeDataURL, className: "h-16 object-contain" }),
+                                                h('button', { onClick: downloadBarcode, className: "text-indigo-600 hover:text-indigo-800" }, h(Icon, { name: "download" }))
                                             )
                                         ),
-                                        h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
-                                            h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันเริ่ม"),
-                                                h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyStart, onChange: e => setFormData({...formData, warrantyStart: e.target.value}) })
+
+                                        showBarcodeInput && h('div', { className: "md:col-span-2" },
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "บาร์โค้ดสินค้า"),
+                                            h('div', { className: "flex gap-2" },
+                                                h('input', { 
+                                                    className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", 
+                                                    value: formData.barcode, 
+                                                    onChange: e => setFormData({...formData, barcode: e.target.value}) 
+                                                }),
+                                                h('button', { 
+                                                    type: "button", 
+                                                    onClick: () => {
+                                                        if (isScanningForm) {
+                                                            stopScanner('form');
+                                                        } else {
+                                                            setIsScanningForm(true);
+                                                            setTimeout(() => startScanner('form', scannerFormRef), 100);
+                                                        }
+                                                    }, 
+                                                    className: `px-4 rounded-xl ${isScanningForm ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'} hover:bg-slate-200 flex items-center justify-center`
+                                                }, h(Icon, { name: "scan-barcode", className: "w-5 h-5" }))
+                                            )
+                                        ),
+
+                                        h('div', null,
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ราคา"),
+                                            h('input', { type: "number", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.price, onChange: e => setFormData({...formData, price: e.target.value}) })
+                                        ),
+
+                                        h('div', null,
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันที่"),
+                                            h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.date, onChange: e => setFormData({...formData, date: e.target.value}) })
+                                        ),
+
+                                        h('div', { className: "md:col-span-2 flex items-center gap-3" },
+                                            h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "มีประกัน"),
+                                            h(Toggle, { checked: formData.hasWarranty, onChange: (val) => setFormData({...formData, hasWarranty: val}) })
+                                        ),
+
+                                        formData.hasWarranty && h('div', { className: "md:col-span-2 space-y-4 pl-6 border-l-2 border-indigo-200" },
+                                            h('div', { className: "grid grid-cols-1 md:grid-cols-3 gap-4" },
+                                                h('div', null,
+                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ปี"),
+                                                    h('input', { type: "number", min: "0", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyYears, onChange: e => {
+                                                        const val = e.target.value;
+                                                        setFormData(prev => ({ ...prev, warrantyYears: val, warrantyEnd: '' }));
+                                                    } })
+                                                ),
+                                                h('div', null,
+                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "เดือน"),
+                                                    h('input', { type: "number", min: "0", max: "11", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyMonths, onChange: e => {
+                                                        const val = e.target.value;
+                                                        setFormData(prev => ({ ...prev, warrantyMonths: val, warrantyEnd: '' }));
+                                                    } })
+                                                ),
+                                                h('div', null,
+                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วัน"),
+                                                    h('input', { type: "number", min: "0", max: "30", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyDays, onChange: e => {
+                                                        const val = e.target.value;
+                                                        setFormData(prev => ({ ...prev, warrantyDays: val, warrantyEnd: '' }));
+                                                    } })
+                                                )
                                             ),
-                                            h('div', null,
-                                                h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันหมด"),
-                                                h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyEnd, onChange: e => {
-                                                    const val = e.target.value;
-                                                    setFormData(prev => ({ ...prev, warrantyEnd: val, warrantyYears: '', warrantyMonths: '', warrantyDays: '' }));
-                                                } })
+                                            h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
+                                                h('div', null,
+                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันเริ่ม"),
+                                                    h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyStart, onChange: e => setFormData({...formData, warrantyStart: e.target.value}) })
+                                                ),
+                                                h('div', null,
+                                                    h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "วันหมด"),
+                                                    h('input', { type: "date", className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm", value: formData.warrantyEnd, onChange: e => {
+                                                        const val = e.target.value;
+                                                        setFormData(prev => ({ ...prev, warrantyEnd: val, warrantyYears: '', warrantyMonths: '', warrantyDays: '' }));
+                                                    } })
+                                                )
                                             )
                                         )
                                     )
@@ -1837,7 +1926,7 @@ function doGet(e) {
                     h('button', { onClick: () => stopScanner('form'), className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
                 ),
 
-                // Config Editor
+                // Config Editor with Import button
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isConfigOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isConfigOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsConfigOpen(false) }),
                     h('div', { className: `absolute inset-y-0 left-0 max-w-full flex transition-transform duration-300 ${isConfigOpen ? 'translate-x-0' : '-translate-x-full'}` },
@@ -1850,6 +1939,11 @@ function doGet(e) {
                                         className: "text-indigo-600 hover:text-indigo-800 p-2 rounded-lg hover:bg-indigo-50",
                                         title: "คืนค่าเริ่มต้น"
                                     }, h(Icon, { name: "rotate-ccw", className: "w-5 h-5" })),
+                                    h('button', { 
+                                        onClick: importFromBackup,
+                                        className: "text-blue-600 hover:text-blue-800 p-2 rounded-lg hover:bg-blue-50",
+                                        title: "นำเข้าข้อมูลจาก Backup"
+                                    }, h(Icon, { name: "download", className: "w-5 h-5" })),
                                     h('button', { 
                                         onClick: saveConfigToSheet,
                                         className: "text-green-600 hover:text-green-800 p-2 rounded-lg hover:bg-green-50",
@@ -1962,7 +2056,7 @@ function doGet(e) {
                                       h('span', { className: "hidden sm:inline" }, "ดูวิธีรับลิงก์ GAS")),
                                     h('div', { className: "bg-slate-50 p-4 rounded-2xl border border-slate-100" },
                                         h('h4', { className: "font-bold text-sm text-slate-700 mb-2 flex items-center gap-2" }, h(Icon, { name: "code", className: "w-4 h-4" }), "สำหรับผู้ดูแลระบบ"),
-                                        h('p', { className: "text-xs text-slate-500 mb-4 leading-relaxed" }, "คัดลอกโค้ดด้านล่างไปวางใน Apps Script (รองรับการลบและบันทึกประวัติ)"),
+                                        h('p', { className: "text-xs text-slate-500 mb-4 leading-relaxed" }, "คัดลอกโค้ดด้านล่างไปวางใน Apps Script (รองรับการลบและ backup)"),
                                         h('button', { 
                                             onClick: () => { navigator.clipboard.writeText(GAS_CODE_TEMPLATE); setCopied(true); setTimeout(() => setCopied(false), 2000); }, 
                                             className: `w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all border ${copied ? 'bg-green-50 text-green-600 border-green-200' : 'bg-white text-slate-600 border-slate-200'}` 
