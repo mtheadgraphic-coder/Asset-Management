@@ -17,7 +17,6 @@
         .custom-scroll::-webkit-scrollbar { width: 6px; }
         .custom-scroll::-webkit-scrollbar-track { background: transparent; }
         .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
         * { font-family: 'Kanit', sans-serif; }
         @media print {
             .no-print { display: none; }
@@ -117,6 +116,34 @@
         .location-dropdown-item:hover {
             background-color: #f1f5f9;
         }
+        /* Toggle switch */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 3rem;
+            height: 1.5rem;
+            background-color: #cbd5e1;
+            border-radius: 9999px;
+            transition: background-color 0.2s;
+            cursor: pointer;
+        }
+        .toggle-switch.active {
+            background-color: #818cf8;
+        }
+        .toggle-switch .toggle-knob {
+            position: absolute;
+            top: 0.125rem;
+            left: 0.125rem;
+            width: 1.25rem;
+            height: 1.25rem;
+            background-color: white;
+            border-radius: 50%;
+            transition: transform 0.2s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+        .toggle-switch.active .toggle-knob {
+            transform: translateX(1.5rem);
+        }
     </style>
 </head>
 <body>
@@ -135,6 +162,16 @@
 
         const refreshIcons = () => {
             if (window.lucide) window.lucide.createIcons();
+        };
+
+        // Toggle Component
+        const Toggle = ({ checked, onChange }) => {
+            return h('div', {
+                className: `toggle-switch ${checked ? 'active' : ''}`,
+                onClick: () => onChange(!checked)
+            },
+                h('div', { className: 'toggle-knob' })
+            );
         };
 
         // ----- Service Worker Registration and IndexedDB Setup -----
@@ -252,7 +289,7 @@
             return tx.complete;
         };
 
-        // GAS CODE TEMPLATE (removed Other sheet, added warrantyDays)
+        // GAS CODE TEMPLATE เพิ่ม action delete
         const GAS_CODE_TEMPLATE = `function doPost(e) {
   var prop = ContentService.MimeType.JSON;
   try {
@@ -298,6 +335,20 @@
         } else {
           assetSheet.appendRow(rowData); // fallback
         }
+      }
+      
+      return ContentService.createTextOutput(JSON.stringify({status: 'success'})).setMimeType(prop);
+    }
+    
+    // ---------- DELETE ASSET ----------
+    if (action === 'delete') {
+      var assetSheet = ss.getSheetByName('Asset');
+      if (!assetSheet) return ContentService.createTextOutput(JSON.stringify({status: 'error', message: 'Asset sheet not found'})).setMimeType(prop);
+      
+      var ids = assetSheet.getRange(2, 1, assetSheet.getLastRow() - 1, 1).getValues().flat();
+      var rowIndex = ids.indexOf(data.id) + 2;
+      if (rowIndex > 1) {
+        assetSheet.deleteRow(rowIndex);
       }
       
       return ContentService.createTextOutput(JSON.stringify({status: 'success'})).setMimeType(prop);
@@ -809,7 +860,7 @@ function doGet(e) {
                 setIsFormOpen(true);
             };
 
-            // Optimistic update
+            // Optimistic update for create/update
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 if (!scriptUrl) { setIsSettingsOpen(true); return; }
@@ -841,6 +892,33 @@ function doGet(e) {
                         }, 1500);
                     } catch (e) {
                         await addPending(formData, action);
+                        setPendingCount(prev => prev + 1);
+                    }
+                }
+            };
+
+            // Delete function
+            const handleDelete = async (id) => {
+                if (!confirm('คุณแน่ใจหรือไม่ที่จะลบรายการนี้?')) return;
+                if (!scriptUrl) { setIsSettingsOpen(true); return; }
+
+                // Optimistic delete
+                setAssets(prev => prev.filter(a => a.id !== id));
+                setIsFormOpen(false);
+
+                if (!isOnline) {
+                    await addPending({ id }, 'delete');
+                    setPendingCount(prev => prev + 1);
+                } else {
+                    try {
+                        await fetch(scriptUrl, {
+                            method: 'POST', mode: 'no-cors',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'delete', data: { id } })
+                        });
+                        setTimeout(() => fetchData(), 1500);
+                    } catch (e) {
+                        await addPending({ id }, 'delete');
                         setPendingCount(prev => prev + 1);
                     }
                 }
@@ -1016,15 +1094,14 @@ function doGet(e) {
                 }
             };
 
-            // Download barcodes as zip
-            const downloadBarcodesZip = async () => {
+            // Download barcodes as zip or single image
+            const downloadBarcodes = async () => {
                 const selectedItems = assets.filter(a => selectedIds.has(a.id));
                 if (selectedItems.length === 0) return;
 
-                const zip = new JSZip();
-                const folder = zip.folder("barcodes");
-
-                for (let item of selectedItems) {
+                if (selectedItems.length === 1) {
+                    // ดาวน์โหลดไฟล์เดียว
+                    const item = selectedItems[0];
                     const canvas = document.createElement('canvas');
                     try {
                         JsBarcode(canvas, item.code, {
@@ -1037,22 +1114,48 @@ function doGet(e) {
                             text: `${item.name} - ${item.code}`
                         });
                         const dataURL = canvas.toDataURL("image/png");
-                        const base64Data = dataURL.split(',')[1];
-                        folder.file(`${item.code}.png`, base64Data, { base64: true });
+                        const link = document.createElement('a');
+                        link.download = `barcode-${item.code}.png`;
+                        link.href = dataURL;
+                        link.click();
                     } catch (e) {
                         console.error(e);
                     }
-                }
+                } else {
+                    // สร้าง zip
+                    const zip = new JSZip();
+                    const folder = zip.folder("barcodes");
 
-                const content = await zip.generateAsync({ type: "blob" });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(content);
-                link.download = `barcodes-${Date.now()}.zip`;
-                link.click();
-                URL.revokeObjectURL(link.href);
+                    for (let item of selectedItems) {
+                        const canvas = document.createElement('canvas');
+                        try {
+                            JsBarcode(canvas, item.code, {
+                                format: "CODE128",
+                                lineColor: "#000",
+                                width: 3,
+                                height: 80,
+                                displayValue: true,
+                                fontSize: 14,
+                                text: `${item.name} - ${item.code}`
+                            });
+                            const dataURL = canvas.toDataURL("image/png");
+                            const base64Data = dataURL.split(',')[1];
+                            folder.file(`${item.code}.png`, base64Data, { base64: true });
+                        } catch (e) {
+                            console.error(e);
+                        }
+                    }
+
+                    const content = await zip.generateAsync({ type: "blob" });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(content);
+                    link.download = `barcodes-${Date.now()}.zip`;
+                    link.click();
+                    URL.revokeObjectURL(link.href);
+                }
             };
 
-            // ฟังก์ชันค้นหา - แก้ไขให้ทำงานได้ (ใช้ toLowerCase และ includes)
+            // ฟังก์ชันค้นหา
             const filteredAssets = useMemo(() => {
                 const term = searchTerm.toLowerCase().trim();
                 if (!term) return assets;
@@ -1181,7 +1284,7 @@ function doGet(e) {
             const visibleColumns = ALL_COLUMNS.filter(col => !hiddenColumns.includes(col.key) || col.always);
 
             return h('div', { className: "min-h-screen flex flex-col text-slate-800" },
-                // Header
+                // Header (คงเดิม)
                 h('div', { className: "bg-white shadow-sm z-30 sticky top-0" },
                     h('div', { className: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" },
                         h('div', { className: "flex justify-between h-16 items-center" },
@@ -1221,9 +1324,9 @@ function doGet(e) {
                     )
                 ),
 
-                // Main Content
+                // Main Content (คงเดิม)
                 h('div', { className: "flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8" },
-                    // Summary Cards (ซ่อนเริ่มต้น)
+                    // Summary Cards
                     showSummary && h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-8" },
                         h('div', { className: "bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-center" },
                             h('p', { className: "text-slate-400 text-xs font-bold uppercase tracking-wider mb-1" }, "ทรัพย์สินรวม"),
@@ -1295,14 +1398,28 @@ function doGet(e) {
                                 }, h(Icon, { name: "check-square", className: "w-5 h-5" })),
                                 selectedIds.size > 0 && h('div', { className: "flex gap-2 mr-2" },
                                     h('button', { 
-                                        onClick: downloadBarcodesZip, 
+                                        onClick: downloadBarcodes, 
                                         className: "action-icon-button bg-green-100 hover:bg-green-200 text-green-700",
                                         title: "ดาวน์โหลดบาร์โค้ด"
                                     }, h(Icon, { name: "download", className: "w-5 h-5" })),
                                     h('button', { 
                                         onClick: () => {
                                             if (confirm(`ลบ ${selectedIds.size} รายการ?`)) {
-                                                alert('ฟังก์ชันลบยังไม่เชื่อมต่อกับ GAS (ต้องเพิ่ม action delete)');
+                                                // ลบทีละรายการ (optimistic)
+                                                selectedIds.forEach(id => {
+                                                    setAssets(prev => prev.filter(a => a.id !== id));
+                                                    if (!isOnline) {
+                                                        addPending({ id }, 'delete');
+                                                    } else {
+                                                        fetch(scriptUrl, {
+                                                            method: 'POST', mode: 'no-cors',
+                                                            headers: { 'Content-Type': 'application/json' },
+                                                            body: JSON.stringify({ action: 'delete', data: { id } })
+                                                        }).catch(() => addPending({ id }, 'delete'));
+                                                    }
+                                                });
+                                                setSelectedIds(new Set());
+                                                setTimeout(() => fetchData(), 1500);
                                             }
                                         }, 
                                         className: "action-icon-button bg-red-100 hover:bg-red-200 text-red-700",
@@ -1403,7 +1520,7 @@ function doGet(e) {
                     )
                 ),
 
-                // Scanner modal สำหรับค้นหา
+                // Scanner modal
                 isScanningSearch && h('div', { className: "fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-6" },
                     h('div', { className: "w-full max-w-sm rounded-2xl overflow-hidden bg-white relative" }, h('div', { id: "reader" })),
                     h('button', { onClick: () => stopScanner('search'), className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
@@ -1466,47 +1583,25 @@ function doGet(e) {
                     )
                 ),
 
-                // Form Slide-over
+                // Form Slide-over (ปรับปรุง)
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isFormOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isFormOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsFormOpen(false) }),
                     h('div', { className: `absolute inset-y-0 right-0 max-w-full flex transition-transform duration-300 ${isFormOpen ? 'translate-x-0' : 'translate-x-full'}` },
-                        h('div', { className: "w-screen max-w-md md:max-w-lg bg-white shadow-2xl flex flex-col h-full" },
+                        h('div', { className: "w-screen max-w-2xl bg-white shadow-2xl flex flex-col h-full" }, // เปลี่ยนเป็น max-w-2xl ให้กว้างขึ้น
                             h('div', { className: "px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-white" },
                                 h('h2', { className: "text-lg font-black text-slate-800" }, formData.id ? "แก้ไขข้อมูล" : "เพิ่มครุภัณฑ์ใหม่"),
                                 h('button', { onClick: () => setIsFormOpen(false), className: "p-2 hover:bg-slate-50 rounded-full transition-colors" }, h(Icon, { name: "x", className: "w-5 h-5 text-slate-400" }))
                             ),
                             h('div', { className: "flex-1 overflow-y-auto p-6 custom-scroll bg-slate-50/50" },
                                 h('form', { onSubmit: handleSubmit, className: "space-y-6" },
-                                    // ชื่อรายการ มาก่อน
+                                    // ลำดับตามที่กำหนด
+                                    // ชื่อรายการ
                                     h('div', null,
                                         h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ชื่อรายการ"),
                                         h('input', { required: true, className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", value: formData.name, onChange: e => setFormData({...formData, name: e.target.value}) })
                                     ),
 
-                                    // บาร์โค้ดสินค้า
-                                    h('div', null,
-                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "บาร์โค้ดสินค้า"),
-                                        h('div', { className: "flex gap-2" },
-                                            h('input', { 
-                                                className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", 
-                                                value: formData.barcode, 
-                                                onChange: e => setFormData({...formData, barcode: e.target.value}) 
-                                            }),
-                                            h('button', { 
-                                                type: "button", 
-                                                onClick: () => {
-                                                    if (isScanningForm) {
-                                                        stopScanner('form');
-                                                    } else {
-                                                        setIsScanningForm(true);
-                                                        setTimeout(() => startScanner('form', scannerFormRef), 100);
-                                                    }
-                                                }, 
-                                                className: `px-4 rounded-xl ${isScanningForm ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'} hover:bg-slate-200 flex items-center justify-center`
-                                            }, h(Icon, { name: "scan-barcode", className: "w-5 h-5" }))
-                                        )
-                                    ),
-
+                                    // หมวดหมู่
                                     h('div', null,
                                         h('div', { className: "flex justify-between items-center mb-1.5" },
                                             h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "หมวดหมู่"),
@@ -1519,20 +1614,7 @@ function doGet(e) {
                                         }, categories.sort((a,b) => a.order - b.order).map(c => h('option', { key: c.id, value: c.name }, c.name)))
                                     ),
 
-                                    h('div', null,
-                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "รหัสทรัพย์สิน"),
-                                        h('input', { 
-                                            className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-mono font-bold text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500", 
-                                            value: formData.code, 
-                                            onChange: e => setFormData({...formData, code: e.target.value}) 
-                                        }),
-                                        barcodeDataURL && h('div', { className: "mt-2 p-2 bg-white border rounded-lg flex justify-between items-center" },
-                                            h('img', { src: barcodeDataURL, className: "h-16 object-contain" }),
-                                            h('button', { onClick: downloadBarcode, className: "text-indigo-600 hover:text-indigo-800" }, h(Icon, { name: "download" }))
-                                        )
-                                    ),
-
-                                    // สถานที่แบบ input + dropdown
+                                    // สถานที่เก็บ
                                     h('div', { className: "relative", ref: locationDropdownRef },
                                         h('div', { className: "flex justify-between items-center mb-1.5" },
                                             h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานที่เก็บ"),
@@ -1565,6 +1647,7 @@ function doGet(e) {
                                         )
                                     ),
 
+                                    // สถานะ
                                     h('div', null,
                                         h('div', { className: "flex justify-between items-center mb-1.5" },
                                             h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "สถานะ"),
@@ -1577,7 +1660,45 @@ function doGet(e) {
                                         }, statuses.sort((a,b) => a.order - b.order).map(s => h('option', { key: s.id, value: s.name }, s.name)))
                                     ),
 
-                                    // ราคาและวันที่ คู่กัน ซ้าย-ขวา เต็มพื้นที่
+                                    // รหัสทรัพย์สิน
+                                    h('div', null,
+                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "รหัสทรัพย์สิน"),
+                                        h('input', { 
+                                            className: "w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-mono font-bold text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500", 
+                                            value: formData.code, 
+                                            onChange: e => setFormData({...formData, code: e.target.value}) 
+                                        }),
+                                        barcodeDataURL && h('div', { className: "mt-2 p-2 bg-white border rounded-lg flex justify-between items-center" },
+                                            h('img', { src: barcodeDataURL, className: "h-16 object-contain" }),
+                                            h('button', { onClick: downloadBarcode, className: "text-indigo-600 hover:text-indigo-800" }, h(Icon, { name: "download" }))
+                                        )
+                                    ),
+
+                                    // บาร์โค้ดสินค้า
+                                    h('div', null,
+                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "บาร์โค้ดสินค้า"),
+                                        h('div', { className: "flex gap-2" },
+                                            h('input', { 
+                                                className: "flex-1 p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500", 
+                                                value: formData.barcode, 
+                                                onChange: e => setFormData({...formData, barcode: e.target.value}) 
+                                            }),
+                                            h('button', { 
+                                                type: "button", 
+                                                onClick: () => {
+                                                    if (isScanningForm) {
+                                                        stopScanner('form');
+                                                    } else {
+                                                        setIsScanningForm(true);
+                                                        setTimeout(() => startScanner('form', scannerFormRef), 100);
+                                                    }
+                                                }, 
+                                                className: `px-4 rounded-xl ${isScanningForm ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'} hover:bg-slate-200 flex items-center justify-center`
+                                            }, h(Icon, { name: "scan-barcode", className: "w-5 h-5" }))
+                                        )
+                                    ),
+
+                                    // ราคาและวันที่ คู่กัน
                                     h('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
                                         h('div', null,
                                             h('label', { className: "text-xs font-bold text-slate-500 uppercase mb-1.5 block" }, "ราคา"),
@@ -1589,11 +1710,13 @@ function doGet(e) {
                                         )
                                     ),
 
-                                    h('div', { className: "flex items-center gap-2" },
-                                        h('input', { type: "checkbox", id: "hasWarranty", checked: formData.hasWarranty, onChange: e => setFormData({...formData, hasWarranty: e.target.checked}) }),
-                                        h('label', { htmlFor: "hasWarranty", className: "text-sm font-medium text-slate-700" }, "มีประกัน")
+                                    // มีประกัน (Toggle)
+                                    h('div', { className: "flex items-center gap-3" },
+                                        h('label', { className: "text-xs font-bold text-slate-500 uppercase" }, "มีประกัน"),
+                                        h(Toggle, { checked: formData.hasWarranty, onChange: (val) => setFormData({...formData, hasWarranty: val}) })
                                     ),
 
+                                    // ส่วนประกัน (แสดงเมื่อมีประกัน)
                                     formData.hasWarranty && h('div', { className: "space-y-4 pl-6 border-l-2 border-indigo-200" },
                                         h('div', { className: "grid grid-cols-1 md:grid-cols-3 gap-4" },
                                             h('div', null,
@@ -1634,11 +1757,24 @@ function doGet(e) {
                                     )
                                 )
                             ),
-                            h('div', { className: "p-6 border-t border-slate-100 bg-white" },
+                            h('div', { className: "p-6 border-t border-slate-100 bg-white flex gap-3" },
+                                formData.id ? (
+                                    // ปุ่มสำหรับแก้ไข
+                                    h('button', { 
+                                        onClick: () => handleDelete(formData.id),
+                                        className: "flex-1 bg-red-500 hover:bg-red-600 text-white py-4 rounded-xl font-bold shadow-lg transition-all flex items-center justify-center gap-2"
+                                    }, h(Icon, { name: "trash-2", className: "w-5 h-5" }), "ลบ")
+                                ) : (
+                                    // ปุ่มสำหรับเพิ่มใหม่
+                                    h('button', { 
+                                        onClick: () => setIsFormOpen(false),
+                                        className: "flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 py-4 rounded-xl font-bold shadow-lg transition-all flex items-center justify-center gap-2"
+                                    }, h(Icon, { name: "x", className: "w-5 h-5" }), "ยกเลิก")
+                                ),
                                 h('button', { 
                                     onClick: handleSubmit, 
                                     disabled: loading, 
-                                    className: `w-full py-4 rounded-xl font-bold shadow-lg transition-all flex items-center justify-center gap-2 ${loading ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800'}` 
+                                    className: `flex-1 py-4 rounded-xl font-bold shadow-lg transition-all flex items-center justify-center gap-2 ${loading ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800'}` 
                                 }, loading ? h(Icon, { name: "loader", className: "animate-spin" }) : h(Icon, { name: "save", className: "w-5 h-5" }), loading ? "กำลังบันทึก..." : "บันทึกข้อมูล")
                             )
                         )
@@ -1777,7 +1913,7 @@ function doGet(e) {
                                       h('span', { className: "hidden sm:inline" }, "ดูวิธีรับลิงก์ GAS")),
                                     h('div', { className: "bg-slate-50 p-4 rounded-2xl border border-slate-100" },
                                         h('h4', { className: "font-bold text-sm text-slate-700 mb-2 flex items-center gap-2" }, h(Icon, { name: "code", className: "w-4 h-4" }), "สำหรับผู้ดูแลระบบ"),
-                                        h('p', { className: "text-xs text-slate-500 mb-4 leading-relaxed" }, "คัดลอกโค้ดด้านล่างไปวางใน Apps Script (แบ่งเป็น 2 แท็บ: Asset และ Dropdown) บันทึกเป็น CSV อ่านง่าย"),
+                                        h('p', { className: "text-xs text-slate-500 mb-4 leading-relaxed" }, "คัดลอกโค้ดด้านล่างไปวางใน Apps Script (รองรับการลบ)"),
                                         h('button', { 
                                             onClick: () => { navigator.clipboard.writeText(GAS_CODE_TEMPLATE); setCopied(true); setTimeout(() => setCopied(false), 2000); }, 
                                             className: `w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all border ${copied ? 'bg-green-50 text-green-600 border-green-200' : 'bg-white text-slate-600 border-slate-200'}` 
