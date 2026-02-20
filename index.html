@@ -54,7 +54,6 @@
             width: 100%;
             height: auto;
         }
-        /* Checkbox column visibility */
         .checkbox-hidden .checkbox-col {
             display: none;
         }
@@ -83,6 +82,16 @@
             color: #1e293b;
         }
         .action-icon-button.active {
+            background-color: #818cf8;
+            color: white;
+        }
+        .tab-button {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .tab-button.active {
             background-color: #818cf8;
             color: white;
         }
@@ -370,12 +379,13 @@ function doGet(e) {
   }
 }`;
 
-        // Default categories ตามที่กำหนด (M, S, IT, X)
+        // Default categories ตามที่กำหนด (เพิ่ม ของออกบูธ B)
         const DEFAULT_CATEGORIES = [
             { id: '1', name: 'สื่อคณิตศาสตร์', prefix: 'M', order: 0 },
             { id: '2', name: 'สื่อวิทยาศาสตร์', prefix: 'S', order: 1 },
             { id: '3', name: 'อุปกรณ์คอมพิวเตอร์-ไอที', prefix: 'IT', order: 2 },
-            { id: '4', name: 'ทั่วไป', prefix: 'X', order: 3 }
+            { id: '4', name: 'ของออกบูธ', prefix: 'B', order: 3 },
+            { id: '5', name: 'ทั่วไป', prefix: 'X', order: 4 }
         ];
 
         const DEFAULT_LOCATIONS = [
@@ -462,7 +472,7 @@ function doGet(e) {
             const [showInstructions, setShowInstructions] = useState(false);
             const [isOnline, setIsOnline] = useState(navigator.onLine);
             const [pendingCount, setPendingCount] = useState(0);
-            const [showCheckbox, setShowCheckbox] = useState(true); // ควบคุมการแสดง checkbox column
+            const [showCheckbox, setShowCheckbox] = useState(false); // ปิดเป็นค่าเริ่มต้น
 
             // Drag and drop states
             const [draggedItemId, setDraggedItemId] = useState(null);
@@ -708,7 +718,6 @@ function doGet(e) {
                 }
             }, [assets, totalViewMode]);
 
-            // ปรับขนาดบาร์โค้ดให้ใหญ่ขึ้น
             const generateBarcode = () => {
                 if (!formData.code || !formData.name) return;
                 const canvas = document.createElement('canvas');
@@ -880,7 +889,7 @@ function doGet(e) {
                 }
             };
 
-            // รีเซ็ตเป็นค่าเริ่มต้น
+            // รีเซ็ตเป็นค่าเริ่มต้นตามประเภท
             const resetConfig = () => {
                 if (configType === 'categories') {
                     setCategories(DEFAULT_CATEGORIES);
@@ -1009,7 +1018,7 @@ function doGet(e) {
                 URL.revokeObjectURL(link.href);
             };
 
-            // ฟังก์ชันค้นหา - ปรับปรุงให้ตรงกับรหัส
+            // ฟังก์ชันค้นหา - ปรับปรุงให้รองรับภาษาไทย
             const filteredAssets = useMemo(() => {
                 const term = searchTerm.toLowerCase().trim();
                 if (!term) return assets;
@@ -1017,6 +1026,7 @@ function doGet(e) {
                     const code = (a.code || '').toLowerCase();
                     const name = (a.name || '').toLowerCase();
                     const location = (a.location || '').toLowerCase();
+                    // ใช้ includes ซึ่งรองรับภาษาไทยอยู่แล้ว
                     return code.includes(term) || name.includes(term) || location.includes(term);
                 });
             }, [assets, searchTerm]);
@@ -1162,7 +1172,7 @@ function doGet(e) {
                                     onClick: () => openConfigEditor('categories'),
                                     className: "flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-lg font-semibold text-sm transition-all" 
                                 }, h(Icon, { name: "list", className: "w-4 h-4" }), 
-                                  h('span', { className: "hidden sm:inline" }, "จัดการ Dropdown")),
+                                  h('span', { className: "hidden sm:inline" }, "Dropdown")),
                                 h('button', { 
                                     onClick: () => setShowSummary(!showSummary), 
                                     className: "flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-2 rounded-lg font-semibold text-sm transition-all" 
@@ -1585,14 +1595,13 @@ function doGet(e) {
                     h('button', { onClick: () => stopScanner('form'), className: "mt-8 bg-white/20 text-white px-8 py-3 rounded-full font-bold backdrop-blur-md" }, "ยกเลิก")
                 ),
 
-                // Config Editor with Drag and Drop, Reset and Backup buttons
+                // Config Editor with Tabs, Drag and Drop, Reset and Backup buttons
                 h('div', { className: `fixed inset-0 z-50 overflow-hidden ${isConfigOpen ? 'pointer-events-auto' : 'pointer-events-none'}` },
                     h('div', { className: `absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-300 ${isConfigOpen ? 'opacity-100' : 'opacity-0'}`, onClick: () => setIsConfigOpen(false) }),
                     h('div', { className: `absolute inset-y-0 left-0 max-w-full flex transition-transform duration-300 ${isConfigOpen ? 'translate-x-0' : '-translate-x-full'}` },
                         h('div', { className: "w-screen max-w-sm bg-white shadow-2xl flex flex-col h-full" },
                             h('div', { className: "px-6 py-4 border-b border-slate-100 flex justify-between items-center" },
-                                h('h2', { className: "text-lg font-black text-slate-800" }, 
-                                    configType === 'categories' ? 'จัดการหมวดหมู่' : configType === 'locations' ? 'จัดการสถานที่' : 'จัดการสถานะ'),
+                                h('h2', { className: "text-lg font-black text-slate-800" }, "จัดการ Dropdown"),
                                 h('div', { className: "flex gap-2" },
                                     h('button', { 
                                         onClick: resetConfig,
@@ -1606,6 +1615,21 @@ function doGet(e) {
                                     }, h(Icon, { name: "upload", className: "w-5 h-5" })),
                                     h('button', { onClick: () => setIsConfigOpen(false), className: "p-2 hover:bg-slate-50 rounded-full" }, h(Icon, { name: "x", className: "w-5 h-5" }))
                                 )
+                            ),
+                            // Tabs
+                            h('div', { className: "flex gap-2 p-4 border-b" },
+                                h('button', { 
+                                    onClick: () => setConfigType('categories'),
+                                    className: `tab-button ${configType === 'categories' ? 'active' : ''}`
+                                }, "หมวดหมู่"),
+                                h('button', { 
+                                    onClick: () => setConfigType('locations'),
+                                    className: `tab-button ${configType === 'locations' ? 'active' : ''}`
+                                }, "สถานที่"),
+                                h('button', { 
+                                    onClick: () => setConfigType('statuses'),
+                                    className: `tab-button ${configType === 'statuses' ? 'active' : ''}`
+                                }, "สถานะ")
                             ),
                             h('div', { className: "flex-1 overflow-y-auto p-4 custom-scroll" },
                                 (configType === 'categories' ? categories : configType === 'locations' ? locations : statuses)
